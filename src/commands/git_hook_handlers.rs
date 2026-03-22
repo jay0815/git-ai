@@ -832,18 +832,17 @@ fn select_forward_target_for_repo(
         }
     }
 
-    if let Some(state) = prior_state {
-        if let Some(saved_forward_path) = state.forward_hooks_path.as_deref().map(str::trim)
-            && !saved_forward_path.is_empty()
-        {
-            let saved_path = PathBuf::from(saved_forward_path);
-            if !is_disallowed_forward_hooks_path(&saved_path, Some(repo), Some(managed_hooks_dir)) {
-                return (
-                    state.forward_mode.clone(),
-                    Some(saved_forward_path.to_string()),
-                    state.original_local_hooks_path.clone(),
-                );
-            }
+    if let Some(state) = prior_state
+        && let Some(saved_forward_path) = state.forward_hooks_path.as_deref().map(str::trim)
+        && !saved_forward_path.is_empty()
+    {
+        let saved_path = PathBuf::from(saved_forward_path);
+        if !is_disallowed_forward_hooks_path(&saved_path, Some(repo), Some(managed_hooks_dir)) {
+            return (
+                state.forward_mode.clone(),
+                Some(saved_forward_path.to_string()),
+                state.original_local_hooks_path.clone(),
+            );
         }
     }
 
