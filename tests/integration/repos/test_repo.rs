@@ -1396,6 +1396,19 @@ impl TestRepo {
                 patch.feature_flags = Some(serde_json::Value::Object(merged));
             });
         }
+
+        // The daemon process reads config via a OnceLock singleton that is frozen
+        // at startup.  For dedicated daemons we can shut down the old instance and
+        // start a fresh one so it picks up the config file we just wrote.
+        // Shared daemons cannot be restarted (they are owned by the pool), so
+        // callers that need daemon-visible feature flags must use a dedicated
+        // daemon (TestRepo::new_dedicated_daemon()).
+        if self.daemon_scope == DaemonTestScope::Dedicated {
+            if let Some(daemon) = self.daemon_process.take() {
+                daemon.shutdown();
+            }
+            self.setup_daemon_mode();
+        }
     }
 
     pub(crate) fn daemon_control_socket_path(&self) -> PathBuf {

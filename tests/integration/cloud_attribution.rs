@@ -14,7 +14,7 @@ fn write_file(repo: &TestRepo, name: &str, contents: &str) {
 /// a subsequent human checkpoint should be attributed to the most recent AI agent.
 #[test]
 fn test_cloud_attribution_human_uses_most_recent_ai_agent() {
-    let mut repo = TestRepo::new();
+    let mut repo = TestRepo::new_dedicated_daemon();
     repo.set_feature_flags(FeatureFlags {
         cloud_default_ai_attribution: true,
         ..FeatureFlags::default()
@@ -55,7 +55,7 @@ fn test_cloud_attribution_human_uses_most_recent_ai_agent() {
 /// have an agent_id set (normal behavior).
 #[test]
 fn test_cloud_attribution_disabled_no_agent_id_on_human() {
-    let mut repo = TestRepo::new();
+    let mut repo = TestRepo::new_dedicated_daemon();
     repo.set_feature_flags(FeatureFlags {
         cloud_default_ai_attribution: false,
         ..FeatureFlags::default()
@@ -94,7 +94,7 @@ fn test_cloud_attribution_disabled_no_agent_id_on_human() {
 /// on the environment (e.g., "devin" if /opt/.devin exists, "unknown" otherwise).
 #[test]
 fn test_cloud_attribution_no_ai_checkpoint_uses_fallback() {
-    let mut repo = TestRepo::new();
+    let mut repo = TestRepo::new_dedicated_daemon();
     repo.set_feature_flags(FeatureFlags {
         cloud_default_ai_attribution: true,
         ..FeatureFlags::default()
@@ -138,7 +138,7 @@ fn test_cloud_attribution_no_ai_checkpoint_uses_fallback() {
 /// the fallback (no previous AI checkpoint) should use that tool name.
 #[test]
 fn test_cloud_attribution_fallback_uses_cloud_agent_tool_env() {
-    let mut repo = TestRepo::new();
+    let mut repo = TestRepo::new_dedicated_daemon();
     repo.set_feature_flags(FeatureFlags {
         cloud_default_ai_attribution: true,
         ..FeatureFlags::default()
@@ -178,7 +178,7 @@ fn test_cloud_attribution_fallback_uses_cloud_agent_tool_env() {
 /// the fallback should detect cursor-agent as the tool.
 #[test]
 fn test_cloud_attribution_fallback_detects_cursor_agent() {
-    let mut repo = TestRepo::new();
+    let mut repo = TestRepo::new_dedicated_daemon();
     repo.set_feature_flags(FeatureFlags {
         cloud_default_ai_attribution: true,
         ..FeatureFlags::default()
@@ -214,7 +214,7 @@ fn test_cloud_attribution_fallback_detects_cursor_agent() {
 /// the fallback should detect claude-web as the tool.
 #[test]
 fn test_cloud_attribution_fallback_detects_claude_web() {
-    let mut repo = TestRepo::new();
+    let mut repo = TestRepo::new_dedicated_daemon();
     repo.set_feature_flags(FeatureFlags {
         cloud_default_ai_attribution: true,
         ..FeatureFlags::default()
@@ -250,7 +250,7 @@ fn test_cloud_attribution_fallback_detects_claude_web() {
 /// the human checkpoint should use the MOST RECENT one's agent_id.
 #[test]
 fn test_cloud_attribution_uses_most_recent_of_multiple_ai_checkpoints() {
-    let mut repo = TestRepo::new();
+    let mut repo = TestRepo::new_dedicated_daemon();
     repo.set_feature_flags(FeatureFlags {
         cloud_default_ai_attribution: true,
         ..FeatureFlags::default()
@@ -295,7 +295,7 @@ fn test_cloud_attribution_uses_most_recent_of_multiple_ai_checkpoints() {
 /// The flag only modifies human checkpoint behavior.
 #[test]
 fn test_cloud_attribution_does_not_affect_ai_checkpoints() {
-    let mut repo = TestRepo::new();
+    let mut repo = TestRepo::new_dedicated_daemon();
     repo.set_feature_flags(FeatureFlags {
         cloud_default_ai_attribution: true,
         ..FeatureFlags::default()
@@ -328,7 +328,7 @@ fn test_cloud_attribution_does_not_affect_ai_checkpoints() {
 /// human checkpoints should NOT get attribution even with prior AI checkpoints.
 #[test]
 fn test_cloud_attribution_explicit_disable() {
-    let mut repo = TestRepo::new();
+    let mut repo = TestRepo::new_dedicated_daemon();
     repo.set_feature_flags(FeatureFlags {
         cloud_default_ai_attribution: false,
         ..FeatureFlags::default()
@@ -366,7 +366,7 @@ fn test_cloud_attribution_explicit_disable() {
 /// get a fallback agent_id with cloud-default id.
 #[test]
 fn test_feature_flag_injection_via_test_repo() {
-    let mut repo = TestRepo::new();
+    let mut repo = TestRepo::new_dedicated_daemon();
     repo.set_feature_flags(FeatureFlags {
         cloud_default_ai_attribution: true,
         ..FeatureFlags::default()
@@ -403,7 +403,7 @@ fn test_feature_flag_injection_via_test_repo() {
 /// the fallback should detect "cloud-agent" as the generic tool name.
 #[test]
 fn test_cloud_attribution_fallback_detects_generic_cloud_agent_prefix() {
-    let mut repo = TestRepo::new();
+    let mut repo = TestRepo::new_dedicated_daemon();
     repo.set_feature_flags(FeatureFlags {
         cloud_default_ai_attribution: true,
         ..FeatureFlags::default()
