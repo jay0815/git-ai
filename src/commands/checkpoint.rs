@@ -81,6 +81,11 @@ pub struct PreparedCheckpointManifest {
     pub files: Vec<PreparedCheckpointFile>,
     #[serde(default)]
     pub agent_run_result: Option<AgentRunResult>,
+    /// Cloud env tool detected at capture time (in the wrapper process).
+    /// Propagated to the daemon so it doesn't need to re-detect from env vars
+    /// that only exist in the wrapper's environment.
+    #[serde(default)]
+    pub captured_cloud_env_tool: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -389,6 +394,7 @@ pub(crate) fn run_with_base_commit_override_with_policy(
         is_pre_commit,
         resolved,
         checkpoint_start,
+        None, // live mode: env vars are available in this process
     )
 }
 
@@ -645,6 +651,7 @@ fn execute_resolved_checkpoint(
     is_pre_commit: bool,
     resolved: ResolvedCheckpointExecution,
     checkpoint_start: Instant,
+    captured_cloud_env_tool: Option<String>,
 ) -> Result<(usize, usize, usize), GitAiError> {
     let mut working_log = repo
         .storage
@@ -701,6 +708,7 @@ fn execute_resolved_checkpoint(
         resolved.ts,
         is_pre_commit,
         Some(resolved.base_commit.as_str()),
+        captured_cloud_env_tool.as_deref(),
     ))?;
     debug_log(&format!(
         "[BENCHMARK] get_checkpoint_entries generated {} entries, took {:?}",
@@ -916,6 +924,19 @@ pub fn prepare_captured_checkpoint(
             agent_run_result.dirty_files = None;
         }
 
+        // Capture the cloud env tool now (in the wrapper process which has the
+        // caller's env vars).  The daemon process won't have these env vars, so
+        // we propagate the detected value through the manifest.
+        let captured_cloud_env_tool = if kind == CheckpointKind::Human
+            && Config::get()
+                .get_feature_flags()
+                .cloud_default_ai_attribution
+        {
+            Some(detect_cloud_env_tool())
+        } else {
+            None
+        };
+
         let manifest = PreparedCheckpointManifest {
             repo_working_dir: repo
                 .workdir()
@@ -931,6 +952,7 @@ pub fn prepare_captured_checkpoint(
             explicit_paths,
             files,
             agent_run_result: stored_agent_run_result,
+            captured_cloud_env_tool,
         };
         fs::write(
             async_checkpoint_manifest_path(&capture_id)?,
@@ -1041,6 +1063,7 @@ pub fn execute_captured_checkpoint(
         manifest.is_pre_commit,
         resolved,
         checkpoint_start,
+        manifest.captured_cloud_env_tool,
     )
 }
 
@@ -1689,7 +1712,10 @@ fn detect_cloud_env_tool() -> String {
 /// When cloud_default_ai_attribution is enabled, resolve the effective agent_id
 /// and author_id for a human checkpoint by looking at previous AI checkpoints
 /// or falling back to cloud env detection.
-fn resolve_cloud_attribution_for_human(previous_checkpoints: &[Checkpoint]) -> (AgentId, String) {
+fn resolve_cloud_attribution_for_human(
+    previous_checkpoints: &[Checkpoint],
+    pre_detected_cloud_env_tool: Option<&str>,
+) -> (AgentId, String) {
     // Find the most recent AI checkpoint (iterate in reverse)
     let most_recent_ai = previous_checkpoints
         .iter()
@@ -1702,8 +1728,11 @@ fn resolve_cloud_attribution_for_human(previous_checkpoints: &[Checkpoint]) -> (
         return (agent_id, author_id);
     }
 
-    // No previous AI checkpoint - detect cloud env tool
-    let tool = detect_cloud_env_tool();
+    // No previous AI checkpoint - use pre-detected tool if available (from
+    // the wrapper process in daemon mode), otherwise detect from current env.
+    let tool = pre_detected_cloud_env_tool
+        .map(|t| t.to_string())
+        .unwrap_or_else(detect_cloud_env_tool);
     let agent_id = AgentId {
         tool,
         id: "cloud-default".to_string(),
@@ -1725,6 +1754,7 @@ async fn get_checkpoint_entries(
     ts: u128,
     is_pre_commit: bool,
     head_commit_override: Option<&str>,
+    pre_detected_cloud_env_tool: Option<&str>,
 ) -> Result<(Vec<WorkingLogEntry>, Vec<FileLineStats>, Option<AgentId>), GitAiError> {
     let entries_fn_start = Instant::now();
 
@@ -1762,7 +1792,10 @@ async fn get_checkpoint_entries(
             .get_feature_flags()
             .cloud_default_ai_attribution
     {
-        Some(resolve_cloud_attribution_for_human(previous_checkpoints))
+        Some(resolve_cloud_attribution_for_human(
+            previous_checkpoints,
+            pre_detected_cloud_env_tool,
+        ))
     } else {
         None
     };
