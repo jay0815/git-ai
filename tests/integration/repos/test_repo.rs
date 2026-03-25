@@ -1341,7 +1341,61 @@ impl TestRepo {
     }
 
     pub fn set_feature_flags(&mut self, feature_flags: FeatureFlags) {
-        self.feature_flags = feature_flags;
+        self.feature_flags = feature_flags.clone();
+
+        // Also write feature flags to the config file so the daemon process
+        // (which reads config from disk, not from per-command env vars) picks
+        // them up.
+        let defaults = FeatureFlags::default();
+        let mut flags_json = serde_json::Map::new();
+        if feature_flags.cloud_default_ai_attribution != defaults.cloud_default_ai_attribution {
+            flags_json.insert(
+                "cloud_default_ai_attribution".to_string(),
+                serde_json::Value::Bool(feature_flags.cloud_default_ai_attribution),
+            );
+        }
+        if feature_flags.rewrite_stash != defaults.rewrite_stash {
+            flags_json.insert(
+                "rewrite_stash".to_string(),
+                serde_json::Value::Bool(feature_flags.rewrite_stash),
+            );
+        }
+        if feature_flags.inter_commit_move != defaults.inter_commit_move {
+            flags_json.insert(
+                "inter_commit_move".to_string(),
+                serde_json::Value::Bool(feature_flags.inter_commit_move),
+            );
+        }
+        if feature_flags.auth_keyring != defaults.auth_keyring {
+            flags_json.insert(
+                "auth_keyring".to_string(),
+                serde_json::Value::Bool(feature_flags.auth_keyring),
+            );
+        }
+        if feature_flags.git_hooks_enabled != defaults.git_hooks_enabled {
+            flags_json.insert(
+                "git_hooks_enabled".to_string(),
+                serde_json::Value::Bool(feature_flags.git_hooks_enabled),
+            );
+        }
+        if feature_flags.git_hooks_externally_managed != defaults.git_hooks_externally_managed {
+            flags_json.insert(
+                "git_hooks_externally_managed".to_string(),
+                serde_json::Value::Bool(feature_flags.git_hooks_externally_managed),
+            );
+        }
+        if !flags_json.is_empty() {
+            self.patch_git_ai_config(|patch| {
+                let existing = patch
+                    .feature_flags
+                    .as_ref()
+                    .and_then(|v| v.as_object().cloned())
+                    .unwrap_or_default();
+                let mut merged = existing;
+                merged.extend(flags_json);
+                patch.feature_flags = Some(serde_json::Value::Object(merged));
+            });
+        }
     }
 
     pub(crate) fn daemon_control_socket_path(&self) -> PathBuf {
