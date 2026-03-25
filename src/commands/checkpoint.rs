@@ -980,6 +980,8 @@ pub fn prepare_captured_checkpoint(
                 crate::utils::detect_background_agent_tool()
                     .unwrap_or_else(|| "unknown".to_string()),
             )
+        } else if kind == CheckpointKind::Human {
+            crate::utils::detect_background_agent_tool()
         } else {
             None
         };
