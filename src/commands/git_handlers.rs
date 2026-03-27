@@ -126,19 +126,8 @@ pub fn handle_git(args: &[String]) {
         exit_with_status(exit_status);
     }
 
-    // Repo-creating commands (clone, init) have no meaningful pre/post
-    // repo state — the target repo doesn't exist yet. The wrapper would
-    // either capture nothing (clone from outside a repo) or the wrong
-    // repo (clone from inside a different repo). Skip the invocation_id
-    // so the daemon doesn't wait for wrapper state that never arrives or
-    // is misleading; trace2 events still flow normally (trace2 suppression
-    // requires *both* no invocation_id and a read-only command).
-    if parsed_args
-        .command
-        .as_deref()
-        .is_some_and(|cmd| matches!(cmd, "clone" | "init"))
-        && !parsed_args.is_help
-    {
+    // `init` has no post-hooks, so it can always passthrough early.
+    if parsed_args.command.as_deref() == Some("init") && !parsed_args.is_help {
         let exit_status = proxy_to_git(&parsed_args.to_invocation_vec(), false, None, None);
         exit_with_status(exit_status);
     }
@@ -146,6 +135,14 @@ pub fn handle_git(args: &[String]) {
     // Async mode: wrapper should behave as a pure passthrough to git,
     // but capture and send authoritative pre/post state to the daemon.
     if config::Config::get().feature_flags().async_mode {
+        // Clone in async mode has no meaningful pre/post repo state — the
+        // target repo doesn't exist yet. Skip daemon telemetry so the daemon
+        // doesn't wait for wrapper state that never arrives or is misleading.
+        if parsed_args.command.as_deref() == Some("clone") && !parsed_args.is_help {
+            let exit_status = proxy_to_git(&parsed_args.to_invocation_vec(), false, None, None);
+            exit_with_status(exit_status);
+        }
+
         // Initialize the daemon telemetry handle so we can send wrapper state
         if let crate::daemon::telemetry_handle::DaemonTelemetryInitResult::Failed(e) =
             crate::daemon::telemetry_handle::init_daemon_telemetry_handle()
