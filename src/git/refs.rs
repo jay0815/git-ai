@@ -991,8 +991,10 @@ mod tests {
     }
 
     fn set_test_sharded_notes(enabled: bool) {
-        let mut flags = FeatureFlags::default();
-        flags.sharded_notes = enabled;
+        let flags = FeatureFlags {
+            sharded_notes: enabled,
+            ..FeatureFlags::default()
+        };
         crate::config::Config::set_test_feature_flags(flags);
     }
 
