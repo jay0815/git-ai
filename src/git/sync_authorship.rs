@@ -292,31 +292,25 @@ pub fn fetch_authorship_notes(
     repository: &Repository,
     remote_name: &str,
 ) -> Result<NotesExistence, GitAiError> {
-    // Generate tracking ref for this remote
     let tracking_ref = tracking_ref_for_remote(remote_name);
+    let sharded = sharded_notes_enabled();
 
     debug_log(&format!(
         "fetching authorship notes for remote '{}' to tracking ref '{}'",
         remote_name, tracking_ref
     ));
 
-    // Build refspecs: legacy + shard wildcard (when enabled)
+    // Fetch legacy ref
     let fetch_refspec = format!("+refs/notes/ai:{}", tracking_ref);
-    let mut refspecs = vec![fetch_refspec.as_str()];
-
-    let shard_prefix = shard_tracking_ref_prefix(remote_name);
-    let shard_refspec = format!("+{}*:{}*", AI_SHARDED_NOTES_PREFIX, shard_prefix);
-    let sharded = sharded_notes_enabled();
-    if sharded {
-        refspecs.push(&shard_refspec);
-    }
-
-    let fetch_authorship =
-        build_authorship_fetch_args(repository.global_args_for_exec(), remote_name, &refspecs);
+    let fetch_authorship = build_authorship_fetch_args(
+        repository.global_args_for_exec(),
+        remote_name,
+        &[fetch_refspec.as_str()],
+    );
 
     debug_log(&format!("fetch command: {:?}", fetch_authorship));
 
-    match exec_git(&fetch_authorship) {
+    let legacy_found = match exec_git(&fetch_authorship) {
         Ok(output) => {
             debug_log(&format!(
                 "fetch stdout: '{}'",
@@ -326,21 +320,51 @@ pub fn fetch_authorship_notes(
                 "fetch stderr: '{}'",
                 String::from_utf8_lossy(&output.stderr)
             ));
+            true
         }
         Err(e) => {
             if is_missing_remote_notes_ref_error(&e) {
                 debug_log(&format!(
-                    "no authorship notes found on remote '{}', nothing to sync",
+                    "no legacy authorship notes found on remote '{}'",
                     remote_name
                 ));
-                return Ok(NotesExistence::NotFound);
+                false
+            } else {
+                debug_log(&format!("authorship fetch failed: {}", e));
+                return Err(e);
             }
-            debug_log(&format!("authorship fetch failed: {}", e));
-            return Err(e);
+        }
+    };
+
+    // Fetch shard refs separately so a missing legacy ref doesn't block shard fetching
+    let mut shards_found = false;
+    if sharded {
+        let shard_prefix = shard_tracking_ref_prefix(remote_name);
+        let shard_refspec = format!("+{}*:{}*", AI_SHARDED_NOTES_PREFIX, shard_prefix);
+        let shard_fetch = build_authorship_fetch_args(
+            repository.global_args_for_exec(),
+            remote_name,
+            &[shard_refspec.as_str()],
+        );
+
+        debug_log(&format!("shard fetch command: {:?}", shard_fetch));
+
+        match exec_git(&shard_fetch) {
+            Ok(_) => {
+                shards_found = true;
+            }
+            Err(e) => {
+                // Wildcard refspecs that match nothing don't error, so this is a real failure
+                debug_log(&format!("shard fetch failed: {}", e));
+            }
         }
     }
 
-    // After successful fetch, merge the tracking ref into refs/notes/ai
+    if !legacy_found && !shards_found {
+        return Ok(NotesExistence::NotFound);
+    }
+
+    // Merge the legacy tracking ref into refs/notes/ai
     let local_notes_ref = "refs/notes/ai";
 
     if crate::git::refs::ref_exists(repository, &tracking_ref) {
@@ -372,7 +396,7 @@ pub fn fetch_authorship_notes(
         ));
     }
 
-    // Merge shard tracking refs when sharding is enabled
+    // Merge shard tracking refs
     if sharded {
         merge_shard_tracking_refs(repository, remote_name);
     }
@@ -452,64 +476,64 @@ pub fn push_authorship_notes(repository: &Repository, remote_name: &str) -> Resu
 }
 
 /// Fetch remote notes into a tracking ref and merge into local refs/notes/ai.
+/// Fetches legacy and shard refs separately so a missing ref doesn't block the other.
 fn fetch_and_merge_tracking_notes(repository: &Repository, remote_name: &str) {
     let sharded = sharded_notes_enabled();
     let tracking_ref = tracking_ref_for_remote(remote_name);
+
+    // Fetch legacy ref (best-effort)
     let fetch_refspec = format!("+refs/notes/ai:{}", tracking_ref);
-    let mut refspecs = vec![fetch_refspec.as_str()];
+    let legacy_fetch = build_authorship_fetch_args(
+        repository.global_args_for_exec(),
+        remote_name,
+        &[fetch_refspec.as_str()],
+    );
 
-    let shard_prefix = shard_tracking_ref_prefix(remote_name);
-    let shard_fetch_refspec = format!("+{}*:{}*", AI_SHARDED_NOTES_PREFIX, shard_prefix);
-    if sharded {
-        refspecs.push(&shard_fetch_refspec);
-    }
+    debug_log(&format!("pre-push authorship fetch: {:?}", &legacy_fetch));
 
-    let fetch_args =
-        build_authorship_fetch_args(repository.global_args_for_exec(), remote_name, &refspecs);
+    if exec_git(&legacy_fetch).is_ok() {
+        let local_notes_ref = "refs/notes/ai";
 
-    debug_log(&format!("pre-push authorship fetch: {:?}", &fetch_args));
-
-    // Fetch is best-effort; if it fails (e.g., no remote notes yet), continue
-    if exec_git(&fetch_args).is_err() {
-        return;
-    }
-
-    let local_notes_ref = "refs/notes/ai";
-
-    if !ref_exists(repository, &tracking_ref) {
-        return;
-    }
-
-    if !ref_exists(repository, local_notes_ref) {
-        // Only tracking ref exists - copy it to local
-        debug_log(&format!(
-            "pre-push: initializing {} from {}",
-            local_notes_ref, tracking_ref
-        ));
-        if let Err(e) = copy_ref(repository, &tracking_ref, local_notes_ref) {
-            debug_log(&format!("pre-push notes copy failed: {}", e));
-        }
-        return;
-    }
-
-    // Both exist - merge them
-    debug_log(&format!(
-        "pre-push: merging {} into {}",
-        tracking_ref, local_notes_ref
-    ));
-    if let Err(e) = merge_notes_from_ref(repository, &tracking_ref) {
-        debug_log(&format!("pre-push notes merge failed: {}", e));
-        // Fallback: manually merge notes when git notes merge crashes
-        // (e.g., due to corrupted/mixed-fanout notes trees, or git bugs
-        // with fanout-level mismatches on older git versions like macOS)
-        if let Err(e2) = fallback_merge_notes_ours(repository, &tracking_ref) {
-            debug_log(&format!("pre-push fallback merge also failed: {}", e2));
+        if ref_exists(repository, &tracking_ref) {
+            if ref_exists(repository, local_notes_ref) {
+                debug_log(&format!(
+                    "pre-push: merging {} into {}",
+                    tracking_ref, local_notes_ref
+                ));
+                if let Err(e) = merge_notes_from_ref(repository, &tracking_ref) {
+                    debug_log(&format!("pre-push notes merge failed: {}", e));
+                    // Fallback: manually merge notes when git notes merge crashes
+                    if let Err(e2) = fallback_merge_notes_ours(repository, &tracking_ref) {
+                        debug_log(&format!("pre-push fallback merge also failed: {}", e2));
+                    }
+                }
+            } else {
+                debug_log(&format!(
+                    "pre-push: initializing {} from {}",
+                    local_notes_ref, tracking_ref
+                ));
+                if let Err(e) = copy_ref(repository, &tracking_ref, local_notes_ref) {
+                    debug_log(&format!("pre-push notes copy failed: {}", e));
+                }
+            }
         }
     }
 
-    // Merge shard tracking refs
+    // Fetch shard refs separately (best-effort)
     if sharded {
-        merge_shard_tracking_refs(repository, remote_name);
+        let shard_prefix = shard_tracking_ref_prefix(remote_name);
+        let shard_fetch_refspec = format!("+{}*:{}*", AI_SHARDED_NOTES_PREFIX, shard_prefix);
+        let shard_fetch = build_authorship_fetch_args(
+            repository.global_args_for_exec(),
+            remote_name,
+            &[shard_fetch_refspec.as_str()],
+        );
+
+        debug_log(&format!("pre-push shard fetch: {:?}", &shard_fetch));
+
+        if exec_git(&shard_fetch).is_ok() {
+            merge_shard_tracking_refs(repository, remote_name);
+        }
     }
 }
 
