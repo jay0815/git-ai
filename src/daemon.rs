@@ -6728,6 +6728,7 @@ fn handle_control_connection_actor_reader<R: Read + Write>(
     Ok(())
 }
 
+#[allow(unused_variables)]
 fn trace_listener_loop_actor(
     trace_socket_path: PathBuf,
     coordinator: Arc<ActorDaemonCoordinator>,
