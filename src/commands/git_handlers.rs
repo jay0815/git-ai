@@ -273,7 +273,6 @@ pub fn handle_git(args: &[String]) {
     exit_with_status(exit_status);
 }
 
-
 /// Handle alias invocations
 #[cfg(feature = "test-support")]
 pub fn resolve_alias_invocation(
@@ -993,7 +992,9 @@ fn in_shell_completion_context() -> bool {
 #[cfg(test)]
 mod tests {
     use super::parse_alias_tokens;
-    use super::{parse_git_cli_args, resolve_alias_invocation, resolve_child_git_hooks_path_override};
+    use super::{
+        parse_git_cli_args, resolve_alias_invocation, resolve_child_git_hooks_path_override,
+    };
     use crate::git::command_classification::is_read_only_invocation;
     use crate::git::find_repository_in_path;
     use std::process::Command;
