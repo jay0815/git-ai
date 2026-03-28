@@ -67,7 +67,10 @@ impl GitTestMode {
     }
 
     pub fn uses_daemon(self) -> bool {
-        matches!(self, Self::Daemon | Self::WrapperDaemon)
+        // All modes now use the daemon for authorship processing since the
+        // hooks code path was removed. The wrapper sends pre/post state to
+        // the daemon, and Daemon mode uses trace2 events.
+        true
     }
 }
 
@@ -1793,9 +1796,8 @@ impl TestRepo {
             command.env("GIT_AI", "git");
         }
 
-        // In WrapperDaemon mode, the wrapper needs the daemon socket paths
-        // to initialize the telemetry handle and send wrapper state.
-        if self.git_mode == GitTestMode::WrapperDaemon {
+        // The wrapper needs the daemon socket paths to send pre/post state.
+        if self.git_mode.uses_wrapper() {
             command.env("GIT_AI_DAEMON_HOME", self.daemon_home_path());
             command.env(
                 "GIT_AI_DAEMON_CONTROL_SOCKET",

@@ -125,16 +125,8 @@ fn graphite_style_restack_child_branch(
     new_head
 }
 
-fn should_skip_for_hooks_mode() -> bool {
-    false
-}
-
 #[test]
 fn test_commit_tree_update_ref_preserves_authorship_notes_on_reparent() {
-    if should_skip_for_hooks_mode() {
-        return;
-    }
-
     let repo = TestRepo::new_with_mode(GitTestMode::Wrapper);
     setup_initial_commit(&repo);
 
@@ -184,10 +176,6 @@ fn test_commit_tree_update_ref_preserves_authorship_notes_on_reparent() {
 
 #[test]
 fn test_commit_tree_update_ref_moves_working_log_to_rewritten_head() {
-    if should_skip_for_hooks_mode() {
-        return;
-    }
-
     let repo = TestRepo::new_with_mode(GitTestMode::Wrapper);
     setup_initial_commit(&repo);
 
@@ -256,10 +244,6 @@ fn test_commit_tree_update_ref_moves_working_log_to_rewritten_head() {
 
 #[test]
 fn test_reset_keep_rewrite_preserves_authorship_notes_on_current_branch() {
-    if should_skip_for_hooks_mode() {
-        return;
-    }
-
     let repo = TestRepo::new_with_mode(GitTestMode::Wrapper);
     setup_initial_commit(&repo);
 
@@ -309,10 +293,6 @@ fn test_reset_keep_rewrite_preserves_authorship_notes_on_current_branch() {
 
 #[test]
 fn test_update_ref_restack_after_parent_amend_preserves_child_attribution() {
-    if should_skip_for_hooks_mode() {
-        return;
-    }
-
     let repo = TestRepo::new_with_mode(GitTestMode::Wrapper);
     setup_initial_commit(&repo);
 
