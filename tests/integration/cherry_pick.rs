@@ -159,6 +159,7 @@ fn test_cherry_pick_preserves_prompt_only_commit_note_metadata() {
                 tool: "mock_ai".to_string(),
                 id: "session-1".to_string(),
                 model: "test-model".to_string(),
+                agent_version: None,
             },
             human_author: Some("Test User <test@example.com>".to_string()),
             messages: vec![],

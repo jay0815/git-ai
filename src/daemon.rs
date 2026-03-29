@@ -1625,6 +1625,7 @@ fn build_human_replay_agent_result(
             tool: "daemon".to_string(),
             id: "daemon-commit-replay".to_string(),
             model: "daemon".to_string(),
+            agent_version: None,
         },
         agent_metadata: None,
         transcript: Some(crate::authorship::transcript::AiTranscript { messages: vec![] }),

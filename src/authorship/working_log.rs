@@ -44,6 +44,8 @@ pub struct AgentId {
     pub tool: String, // e.g., "cursor", "windsurf"
     pub id: String,   // id in their domain
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,6 +257,7 @@ mod tests {
         let agent_id = AgentId {
             tool: "cursor".to_string(),
             model: "gpt-4o".to_string(),
+            agent_version: None,
             id: "session-abc123".to_string(),
         };
 

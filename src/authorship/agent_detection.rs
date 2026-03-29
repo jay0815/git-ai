@@ -117,6 +117,7 @@ pub fn simulate_agent_authorship(
         tool: tool.to_string(),
         id: commit_sha.to_string(),
         model: "unknown".to_string(),
+        agent_version: None,
     };
 
     let prompt_hash = generate_short_hash(&agent_id.id, &agent_id.tool);

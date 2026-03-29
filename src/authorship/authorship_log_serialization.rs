@@ -762,6 +762,7 @@ mod tests {
             tool: "cursor".to_string(),
             id: "session_123".to_string(),
             model: "claude-3-sonnet".to_string(),
+            agent_version: None,
         };
         let prompt_hash = generate_short_hash(&agent_id.id, &agent_id.tool);
         log.metadata.prompts.insert(
@@ -830,6 +831,7 @@ mod tests {
             tool: "cursor".to_string(),
             id: "session_123".to_string(),
             model: "claude-3-sonnet".to_string(),
+            agent_version: None,
         };
         let prompt_hash = generate_short_hash(&agent_id.id, &agent_id.tool);
         log.metadata.prompts.insert(
@@ -880,6 +882,7 @@ mod tests {
             tool: "cursor".to_string(),
             id: "session_123".to_string(),
             model: "claude-3-sonnet".to_string(),
+            agent_version: None,
         };
         let prompt_hash = generate_short_hash(&agent_id.id, &agent_id.tool);
         log.metadata.prompts.insert(
@@ -1056,6 +1059,7 @@ mod tests {
             tool: "cursor".to_string(),
             id: "session_abc".to_string(),
             model: "claude-3-sonnet".to_string(),
+            agent_version: None,
         };
         let mut transcript = AiTranscript::new();
         transcript.add_message(Message::user("Add error handling".to_string(), None));
@@ -1229,6 +1233,7 @@ mod tests {
             tool: "cursor".to_string(),
             id: "session_1".to_string(),
             model: "claude-3-sonnet".to_string(),
+            agent_version: None,
         };
         let mut transcript1 = AiTranscript::new();
         transcript1.add_message(Message::user("Add function".to_string(), None));
@@ -1254,6 +1259,7 @@ mod tests {
             tool: "cursor".to_string(),
             id: "session_2".to_string(),
             model: "claude-3-opus".to_string(),
+            agent_version: None,
         };
         let mut transcript2 = AiTranscript::new();
         transcript2.add_message(Message::user("Add tests".to_string(), None));

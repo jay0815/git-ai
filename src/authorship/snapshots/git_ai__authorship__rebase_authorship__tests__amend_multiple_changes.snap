@@ -55,6 +55,7 @@ AuthorshipLogV3 {
                     tool: "cursor",
                     id: "ai_agent_2",
                     model: "gpt-4",
+                    agent_version: None,
                 },
                 human_author: Some(
                     "Test User <test@example.com>",
@@ -70,6 +71,7 @@ AuthorshipLogV3 {
                     tool: "cursor",
                     id: "ai_agent_1",
                     model: "gpt-4",
+                    agent_version: None,
                 },
                 human_author: Some(
                     "Test User",
@@ -85,6 +87,7 @@ AuthorshipLogV3 {
                     tool: "cursor",
                     id: "ai_agent_4",
                     model: "gpt-4",
+                    agent_version: None,
                 },
                 human_author: Some(
                     "Test User <test@example.com>",
@@ -100,6 +103,7 @@ AuthorshipLogV3 {
                     tool: "cursor",
                     id: "ai_agent_3",
                     model: "gpt-4",
+                    agent_version: None,
                 },
                 human_author: Some(
                     "Test User <test@example.com>",

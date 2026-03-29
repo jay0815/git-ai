@@ -341,6 +341,7 @@ fn ai_agent_run_result(
                     .as_nanos()
             ),
             model: "test-model".to_string(),
+            agent_version: None,
         },
         agent_metadata: None,
         checkpoint_kind: CheckpointKind::AiAgent,

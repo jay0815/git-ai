@@ -353,6 +353,7 @@ impl TmpRepo {
                 tool: "test_harness".to_string(),
                 id: format!("test-human-scope-{}", session),
                 model: "test_model".to_string(),
+                agent_version: None,
             },
             agent_metadata: None,
             checkpoint_kind: CheckpointKind::Human,
@@ -536,6 +537,7 @@ impl TmpRepo {
             tool: tool.unwrap_or("test_tool").to_string(),
             id: session_id.clone(),
             model: model.unwrap_or("test_model").to_string(),
+            agent_version: None,
         };
 
         // Create a minimal transcript with empty messages (as requested)
@@ -1597,6 +1599,7 @@ mod tests {
                 tool: "test-tool".to_string(),
                 id: "test-session".to_string(),
                 model: "test-model".to_string(),
+                agent_version: None,
             },
             agent_metadata: None,
             checkpoint_kind,

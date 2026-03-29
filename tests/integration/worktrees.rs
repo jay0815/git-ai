@@ -423,6 +423,7 @@ crate::worktree_test_wrappers! {
                     tool: "test-tool".to_string(),
                     id: "session-1".to_string(),
                     model: "test-model".to_string(),
+                    agent_version: None,
                 },
                 human_author: None,
                 messages: vec![Message::assistant("initial".to_string(), None)],

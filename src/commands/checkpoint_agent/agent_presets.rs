@@ -112,6 +112,7 @@ impl AgentCheckpointPreset for ClaudePreset {
             tool: "claude".to_string(),
             id: filename.to_string(),
             model: model.unwrap_or_else(|| "unknown".to_string()),
+            agent_version: None,
         };
 
         // Extract file_path from tool_input if present
@@ -446,6 +447,7 @@ impl AgentCheckpointPreset for GeminiPreset {
             tool: "gemini".to_string(),
             id: session_id.to_string(),
             model: model.unwrap_or_else(|| "unknown".to_string()),
+            agent_version: None,
         };
 
         // Extract file_path from tool_input if present
@@ -649,6 +651,7 @@ impl AgentCheckpointPreset for WindsurfPreset {
             tool: "windsurf".to_string(),
             id: trajectory_id.to_string(),
             model: "unknown".to_string(),
+            agent_version: None,
         };
 
         // Extract file_path from tool_info if present
@@ -863,6 +866,7 @@ impl AgentCheckpointPreset for ContinueCliPreset {
             tool: "continue-cli".to_string(),
             id: session_id.to_string(),
             model,
+            agent_version: None,
         };
 
         // Extract file_path from tool_input if present
@@ -1084,6 +1088,7 @@ impl AgentCheckpointPreset for CodexPreset {
             tool: "codex".to_string(),
             id: session_id,
             model: model.unwrap_or_else(|| "unknown".to_string()),
+            agent_version: None,
         };
 
         let agent_metadata =
@@ -1464,6 +1469,7 @@ impl AgentCheckpointPreset for CursorPreset {
                     tool: "cursor".to_string(),
                     id: conversation_id.clone(),
                     model: model.clone(),
+                    agent_version: None,
                 },
                 agent_metadata: None,
                 checkpoint_kind: CheckpointKind::Human,
@@ -1525,6 +1531,7 @@ impl AgentCheckpointPreset for CursorPreset {
             tool: "cursor".to_string(),
             id: conversation_id,
             model,
+            agent_version: None,
         };
 
         // Store cursor database path in metadata for refetching during post-commit.
@@ -1937,6 +1944,7 @@ impl GithubCopilotPreset {
                     tool: "human".to_string(),
                     id: "human".to_string(),
                     model: "human".to_string(),
+                    agent_version: None,
                 },
                 agent_metadata: None,
                 checkpoint_kind: CheckpointKind::Human,
@@ -2006,6 +2014,7 @@ impl GithubCopilotPreset {
             tool: "github-copilot".to_string(),
             id: chat_session_id,
             model: detected_model.unwrap_or_else(|| "unknown".to_string()),
+            agent_version: None,
         };
 
         Ok(AgentRunResult {
@@ -2168,6 +2177,7 @@ impl GithubCopilotPreset {
                     tool: "human".to_string(),
                     id: "human".to_string(),
                     model: "human".to_string(),
+                    agent_version: None,
                 },
                 agent_metadata: None,
                 checkpoint_kind: CheckpointKind::Human,
@@ -2189,6 +2199,7 @@ impl GithubCopilotPreset {
             tool: "github-copilot".to_string(),
             id: chat_session_id,
             model: detected_model.unwrap_or_else(|| "unknown".to_string()),
+            agent_version: None,
         };
 
         let agent_metadata = HashMap::from([
@@ -2820,6 +2831,7 @@ impl AgentCheckpointPreset for DroidPreset {
             tool: "droid".to_string(),
             id: session_id,
             model,
+            agent_version: None,
         };
 
         // Store both paths in metadata
@@ -3605,6 +3617,7 @@ impl AgentCheckpointPreset for AiTabPreset {
                 completion_id.unwrap_or_else(|| Utc::now().timestamp_millis().to_string())
             ),
             model,
+            agent_version: None,
         };
 
         if hook_event_name == "before_edit" {

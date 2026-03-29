@@ -200,6 +200,7 @@ impl AgentCheckpointPreset for OpenCodePreset {
             tool: "opencode".to_string(),
             id: session_id.clone(),
             model: model.unwrap_or_else(|| "unknown".to_string()),
+            agent_version: None,
         };
 
         // Store session_id in metadata for post-commit refetch

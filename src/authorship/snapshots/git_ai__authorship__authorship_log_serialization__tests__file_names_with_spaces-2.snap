@@ -58,6 +58,7 @@ AuthorshipLogV3 {
                     tool: "cursor",
                     id: "session_123",
                     model: "claude-3-sonnet",
+                    agent_version: None,
                 },
                 human_author: None,
                 messages: [],

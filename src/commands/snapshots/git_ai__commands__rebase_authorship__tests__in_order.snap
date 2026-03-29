@@ -37,6 +37,7 @@ AuthorshipLogV3 {
                     tool: "claude",
                     id: "93ac08b3-8890-491f-85fa-6015f2c3b8b4",
                     model: "claude-sonnet-4-20250514",
+                    agent_version: None,
                 },
                 human_author: Some(
                     "Aidan Cunniffe <acunniffe@gmail.com>",
@@ -73,6 +74,7 @@ AuthorshipLogV3 {
                     tool: "claude",
                     id: "e9f6d77b-f181-4d85-b31b-2f8283629d27",
                     model: "claude-sonnet-4-20250514",
+                    agent_version: None,
                 },
                 human_author: Some(
                     "Aidan Cunniffe <acunniffe@gmail.com>",

@@ -42,6 +42,7 @@ AuthorshipLogV3 {
                     tool: "claude",
                     id: "67fced12-038d-4b9e-983a-ac1e4b270a92",
                     model: "claude-sonnet-4-20250514",
+                    agent_version: None,
                 },
                 human_author: Some(
                     "Aidan Cunniffe <acunniffe@gmail.com>",

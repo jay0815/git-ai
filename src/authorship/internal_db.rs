@@ -153,6 +153,7 @@ impl PromptDbRecord {
                 tool: self.tool.clone(),
                 id: self.external_thread_id.clone(),
                 model: self.model.clone(),
+                agent_version: None,
             },
             human_author: self.human_author.clone(),
             messages: self.messages.messages.clone(),
@@ -1327,6 +1328,7 @@ mod tests {
             tool: "cursor".to_string(),
             id: "test-session".to_string(),
             model: "claude-sonnet-4.5".to_string(),
+            agent_version: None,
         });
         checkpoint.transcript = Some(transcript);
         checkpoint.line_stats = CheckpointLineStats {

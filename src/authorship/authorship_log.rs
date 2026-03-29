@@ -237,6 +237,7 @@ mod tests {
             tool: "test".to_string(),
             id: "test-id".to_string(),
             model: "test-model".to_string(),
+            agent_version: None,
         };
 
         let message_list = (0..messages)

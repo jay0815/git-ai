@@ -625,6 +625,7 @@ fn handle_checkpoint(args: &[String]) {
                         tool: "mock_ai".to_string(),
                         id: mock_agent_id,
                         model: "unknown".to_string(),
+                        agent_version: None,
                     },
                     agent_metadata: None,
                     checkpoint_kind: CheckpointKind::AiAgent,
@@ -895,6 +896,7 @@ fn handle_checkpoint(args: &[String]) {
                         .unwrap_or_else(|_| 0)
                 ),
                 model: "unknown".to_string(),
+                agent_version: None,
             },
             agent_metadata: None,
             checkpoint_kind: CheckpointKind::Human,

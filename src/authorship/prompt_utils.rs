@@ -721,6 +721,7 @@ mod tests {
                 tool: tool.to_string(),
                 id: id.to_string(),
                 model: model.to_string(),
+                agent_version: None,
             },
             human_author: Some("test_user".to_string()),
             messages: vec![

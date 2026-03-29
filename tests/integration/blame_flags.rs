@@ -1399,6 +1399,7 @@ fn test_blame_ai_human_author() {
         tool: "cursor".to_string(),
         id: "session_line1".to_string(),
         model: "claude-3-sonnet".to_string(),
+        agent_version: None,
     };
     authorship_log.metadata.prompts.insert(
         prompt_hash_1.clone(),
@@ -1421,6 +1422,7 @@ fn test_blame_ai_human_author() {
         tool: "cursor".to_string(),
         id: "session_line2".to_string(),
         model: "claude-3-sonnet".to_string(),
+        agent_version: None,
     };
     authorship_log.metadata.prompts.insert(
         prompt_hash_2.clone(),

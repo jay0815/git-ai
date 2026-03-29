@@ -78,6 +78,30 @@ pub fn version_meets_requirement(version: (u32, u32), min_version: (u32, u32)) -
     false
 }
 
+/// Look up the version of a coding agent by its tool name.
+/// Uses the same version resolution logic as the MDM hook installer path.
+/// Returns "unknown" if the version cannot be determined for any reason.
+pub fn get_agent_version(tool_name: &str) -> String {
+    let version_str = match tool_name {
+        "claude" => get_binary_version("claude").ok(),
+        "cursor" => resolve_editor_cli("cursor").and_then(|cli| get_editor_version(&cli).ok()),
+        "windsurf" => {
+            resolve_editor_cli("windsurf")
+                .and_then(|cli| get_editor_version(&cli).ok())
+                .or_else(|| get_binary_version("windsurf").ok())
+        }
+        "github-copilot" => {
+            resolve_editor_cli("code").and_then(|cli| get_editor_version(&cli).ok())
+        }
+        "codex" => get_binary_version("codex").ok(),
+        "gemini" => get_binary_version("gemini").ok(),
+        "amp" => get_binary_version("amp").ok(),
+        "opencode" => get_binary_version("opencode").ok(),
+        _ => None,
+    };
+    version_str.unwrap_or_else(|| "unknown".to_string())
+}
+
 /// Check if a binary with the given name exists in the system PATH
 pub fn binary_exists(name: &str) -> bool {
     if let Ok(path_var) = std::env::var("PATH") {

@@ -2430,6 +2430,7 @@ index abc123..def456 100644
                     tool: tool.to_string(),
                     id: format!("{}-id", tool),
                     model: model.to_string(),
+                    agent_version: None,
                 },
                 human_author: None,
                 messages: vec![Message::user("u".to_string(), None)],

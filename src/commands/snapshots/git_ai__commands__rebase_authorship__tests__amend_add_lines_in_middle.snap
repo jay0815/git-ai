@@ -28,6 +28,7 @@ AuthorshipLogV3 {
                     tool: "cursor",
                     id: "ai_agent",
                     model: "gpt-4",
+                    agent_version: None,
                 },
                 human_author: Some(
                     "Test User <test@example.com>",

@@ -1432,6 +1432,7 @@ mod tests {
                 tool: tool.to_string(),
                 id: "test-id".to_string(),
                 model: "test-model".to_string(),
+                agent_version: None,
             },
             human_author: author.map(|a| a.to_string()),
             messages: vec![],

@@ -505,6 +505,7 @@ mod tests {
                     tool: "cursor".to_string(),
                     id: "session".to_string(),
                     model: "gpt-4".to_string(),
+                    agent_version: None,
                 },
                 human_author: None,
                 messages: vec![],

@@ -724,6 +724,21 @@ fn execute_resolved_checkpoint(
             checkpoint.transcript = Some(agent_run.transcript.clone().unwrap_or_default());
             checkpoint.agent_id = Some(agent_run.agent_id.clone());
             checkpoint.agent_metadata = agent_run.agent_metadata.clone();
+
+            // Resolve agent version: reuse from a prior checkpoint in this session
+            // to avoid repeated slow CLI version lookups, or look it up fresh if this
+            // is the first checkpoint for this session.
+            if let Some(ref mut agent_id) = checkpoint.agent_id {
+                let existing_version = checkpoints
+                    .iter()
+                    .filter_map(|cp| cp.agent_id.as_ref())
+                    .find(|aid| aid.tool == agent_id.tool && aid.id == agent_id.id)
+                    .and_then(|aid| aid.agent_version.clone());
+
+                agent_id.agent_version = Some(existing_version.unwrap_or_else(|| {
+                    crate::mdm::utils::get_agent_version(&agent_id.tool)
+                }));
+            }
         }
         debug_log(&format!(
             "[BENCHMARK] Checkpoint creation took {:?}",
@@ -2057,6 +2072,7 @@ mod tests {
                 tool: "test-agent".to_string(),
                 id: "test-capture".to_string(),
                 model: "test-model".to_string(),
+                agent_version: None,
             },
             agent_metadata: None,
             checkpoint_kind,
@@ -2312,6 +2328,7 @@ mod tests {
                 tool: "mock_ai".to_string(),
                 id: "base-override-regression".to_string(),
                 model: "test".to_string(),
+                agent_version: None,
             },
             agent_metadata: None,
             transcript: Some(AiTranscript { messages: vec![] }),
@@ -2370,6 +2387,7 @@ mod tests {
                 tool: "mock_ai".to_string(),
                 id: "base-override-strict-missing-snapshot".to_string(),
                 model: "test".to_string(),
+                agent_version: None,
             },
             agent_metadata: None,
             transcript: Some(AiTranscript { messages: vec![] }),
@@ -2427,6 +2445,7 @@ mod tests {
                 tool: "mock_ai".to_string(),
                 id: "base-override-allow-fallback".to_string(),
                 model: "test".to_string(),
+                agent_version: None,
             },
             agent_metadata: None,
             transcript: Some(AiTranscript { messages: vec![] }),
@@ -2519,6 +2538,7 @@ mod tests {
                 tool: "test_tool".to_string(),
                 id: "test_session".to_string(),
                 model: "test_model".to_string(),
+                agent_version: None,
             },
             agent_metadata: None,
             transcript: Some(AiTranscript { messages: vec![] }),

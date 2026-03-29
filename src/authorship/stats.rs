@@ -1294,6 +1294,7 @@ mod tests {
             tool: "cursor".to_string(),
             id: "session_1".to_string(),
             model: "claude-3-sonnet".to_string(),
+            agent_version: None,
         };
         let hash = crate::authorship::authorship_log_serialization::generate_short_hash(
             &agent_id.id,
@@ -1340,6 +1341,7 @@ mod tests {
             tool: "cursor".to_string(),
             id: "session_2".to_string(),
             model: "claude-3-sonnet".to_string(),
+            agent_version: None,
         };
         let hash = crate::authorship::authorship_log_serialization::generate_short_hash(
             &agent_id.id,
@@ -1388,6 +1390,7 @@ mod tests {
             tool: "cursor".to_string(),
             id: "session_3".to_string(),
             model: "claude-3-sonnet".to_string(),
+            agent_version: None,
         };
         let hash = crate::authorship::authorship_log_serialization::generate_short_hash(
             &agent_id.id,
@@ -1755,6 +1758,7 @@ mod tests {
             tool: "cursor".to_string(),
             id: "session".to_string(),
             model: "claude-3-sonnet".to_string(),
+            agent_version: None,
         };
         let hash = crate::authorship::authorship_log_serialization::generate_short_hash(
             &agent_id.id,

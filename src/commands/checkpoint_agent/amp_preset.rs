@@ -139,6 +139,7 @@ impl AgentCheckpointPreset for AmpPreset {
                 .or(hook_input.tool_use_id.clone())
                 .unwrap_or_else(|| "unknown".to_string()),
             model: model.unwrap_or_else(|| "unknown".to_string()),
+            agent_version: None,
         };
 
         if is_pre_tool_use {
