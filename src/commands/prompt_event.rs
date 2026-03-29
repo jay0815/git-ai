@@ -11,7 +11,6 @@ use crate::metrics::pos_encoded::PosEncoded;
 use crate::metrics::{EventAttributes, MetricEvent, PromptEventValues};
 use crate::utils::debug_log;
 use sha2::{Digest, Sha256};
-use std::io::Read;
 
 /// PromptEvent kind enum values (serialized as strings).
 pub mod prompt_event_kind {
@@ -376,9 +375,17 @@ fn process_generic_prompt_events(agent: &str, hook_input: &str) -> Result<(), Gi
     let hook_data: serde_json::Value = serde_json::from_str(hook_input)
         .map_err(|e| GitAiError::Generic(format!("Invalid hook JSON: {}", e)))?;
 
+    // Try multiple field names for session ID (agents use different names in their hook input)
     let session_id = hook_data["session_id"]
         .as_str()
-        .ok_or_else(|| GitAiError::Generic("Missing session_id".to_string()))?;
+        .or_else(|| hook_data["conversation_id"].as_str())
+        .or_else(|| hook_data["trajectory_id"].as_str())
+        .or_else(|| hook_data["chat_session_id"].as_str())
+        .or_else(|| hook_data["chat_session_path"].as_str())
+        .or_else(|| hook_data["chatSessionPath"].as_str())
+        .ok_or_else(|| {
+            GitAiError::Generic("Missing session identifier in hook input".to_string())
+        })?;
 
     let prompt_id = generate_short_hash(session_id, agent);
 
@@ -452,63 +459,29 @@ fn process_generic_prompt_events(agent: &str, hook_input: &str) -> Result<(), Gi
     Ok(())
 }
 
-/// Entry point for the `prompt-event` command.
-pub fn handle_prompt_event(args: &[String]) {
-    // Only works in async_mode with daemon running
+/// Emit prompt events from checkpoint hook data.
+/// Called by the checkpoint handler to emit prompt events as a side-effect.
+/// Best-effort: silently returns on any failure or if preconditions aren't met.
+pub fn emit_prompt_events_from_checkpoint(agent: &str, hook_input: &str) {
     if !config::Config::get().feature_flags().async_mode {
-        debug_log("prompt-event: skipping, async_mode not enabled");
         return;
     }
 
     if !crate::daemon::telemetry_handle::daemon_telemetry_available() {
-        debug_log("prompt-event: skipping, daemon telemetry not available");
         return;
     }
 
-    if args.is_empty() {
-        eprintln!("Usage: git-ai prompt-event <agent> --hook-input stdin");
-        std::process::exit(1);
+    if hook_input.trim().is_empty() {
+        return;
     }
 
-    let agent = &args[0];
-    let mut hook_input = None;
-
-    // Parse --hook-input
-    let mut i = 1;
-    while i < args.len() {
-        if args[i] == "--hook-input" && i + 1 < args.len() {
-            let source = &args[i + 1];
-            if source == "stdin" {
-                let mut buffer = String::new();
-                if std::io::stdin().read_to_string(&mut buffer).is_ok() {
-                    hook_input = Some(buffer);
-                }
-            } else {
-                hook_input = Some(source.clone());
-            }
-            i += 2;
-        } else {
-            i += 1;
-        }
-    }
-
-    let hook_input = match hook_input {
-        Some(input) if !input.trim().is_empty() => input,
-        _ => {
-            debug_log("prompt-event: no hook input provided");
-            return;
-        }
-    };
-
-    let result = match agent.as_str() {
-        "claude" => process_claude_prompt_events(&hook_input),
-        // All other agents use the generic hook-based path (no transcript)
-        _ => process_generic_prompt_events(agent, &hook_input),
+    let result = match agent {
+        "claude" => process_claude_prompt_events(hook_input),
+        _ => process_generic_prompt_events(agent, hook_input),
     };
 
     if let Err(e) = result {
         debug_log(&format!("prompt-event: error: {}", e));
-        // Don't exit with error - prompt events are best-effort
     }
 }
 

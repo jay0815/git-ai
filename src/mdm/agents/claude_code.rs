@@ -2,8 +2,8 @@ use crate::error::GitAiError;
 use crate::mdm::hook_installer::{HookCheckResult, HookInstaller, HookInstallerParams};
 use crate::mdm::utils::{
     MIN_CLAUDE_VERSION, binary_exists, generate_diff, get_binary_version, home_dir,
-    is_git_ai_checkpoint_command, is_git_ai_prompt_event_command, parse_version, to_git_bash_path,
-    version_meets_requirement, write_atomic,
+    is_git_ai_checkpoint_command, parse_version, to_git_bash_path, version_meets_requirement,
+    write_atomic,
 };
 use serde_json::{Value, json};
 use std::fs;
@@ -12,9 +12,6 @@ use std::path::PathBuf;
 // Command patterns for checkpoint hooks
 const CLAUDE_PRE_TOOL_CMD: &str = "checkpoint claude --hook-input stdin";
 const CLAUDE_POST_TOOL_CMD: &str = "checkpoint claude --hook-input stdin";
-
-// Command pattern for prompt-event hooks
-const CLAUDE_PROMPT_EVENT_CMD: &str = "prompt-event claude --hook-input stdin";
 
 pub struct ClaudeCodeInstaller;
 
@@ -131,14 +128,11 @@ impl HookInstaller for ClaudeCodeInstaller {
         let binary_path_str = to_git_bash_path(&params.binary_path);
         let pre_tool_cmd = format!("{} {}", binary_path_str, CLAUDE_PRE_TOOL_CMD);
         let post_tool_cmd = format!("{} {}", binary_path_str, CLAUDE_POST_TOOL_CMD);
-        let prompt_event_cmd = format!("{} {}", binary_path_str, CLAUDE_PROMPT_EVENT_CMD);
 
         // All hook entries to install: (hook_type, matcher, desired_cmd, is_command_fn)
         // Checkpoint hooks: PreToolUse + PostToolUse on Write|Edit|MultiEdit
-        // Prompt event hooks: PostToolUse (catch-all), UserPromptSubmit, Stop
         #[allow(clippy::type_complexity)]
         let hook_entries: Vec<(&str, Option<&str>, &str, fn(&str) -> bool)> = vec![
-            // Checkpoint hooks
             (
                 "PreToolUse",
                 Some("Write|Edit|MultiEdit"),
@@ -150,25 +144,6 @@ impl HookInstaller for ClaudeCodeInstaller {
                 Some("Write|Edit|MultiEdit"),
                 &post_tool_cmd,
                 is_git_ai_checkpoint_command,
-            ),
-            // Prompt event hooks
-            (
-                "PostToolUse",
-                None,
-                &prompt_event_cmd,
-                is_git_ai_prompt_event_command,
-            ),
-            (
-                "UserPromptSubmit",
-                None,
-                &prompt_event_cmd,
-                is_git_ai_prompt_event_command,
-            ),
-            (
-                "Stop",
-                None,
-                &prompt_event_cmd,
-                is_git_ai_prompt_event_command,
             ),
         ];
 
@@ -340,8 +315,8 @@ impl HookInstaller for ClaudeCodeInstaller {
 
         let mut changed = false;
 
-        // Remove git-ai checkpoint and prompt-event commands from all hook types
-        for hook_type in &["PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"] {
+        // Remove git-ai checkpoint commands from all hook types
+        for hook_type in &["PreToolUse", "PostToolUse"] {
             if let Some(hook_type_array) =
                 hooks_obj.get_mut(*hook_type).and_then(|v| v.as_array_mut())
             {
@@ -354,7 +329,6 @@ impl HookInstaller for ClaudeCodeInstaller {
                         hooks_array.retain(|hook| {
                             if let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) {
                                 !is_git_ai_checkpoint_command(cmd)
-                                    && !is_git_ai_prompt_event_command(cmd)
                             } else {
                                 true
                             }

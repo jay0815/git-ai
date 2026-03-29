@@ -71,7 +71,8 @@ fn write_transcript(path: &Path, content: &str) {
 fn run_prompt_event(repo: &TestRepo, agent: &str, hook_input: &str) -> (bool, String, String) {
     let binary_path = get_binary_path();
     let mut command = Command::new(binary_path);
-    command.args(["prompt-event", agent, "--hook-input", "stdin"]);
+    // prompt-event is now emitted as a side-effect of the checkpoint command
+    command.args(["checkpoint", agent, "--hook-input", "stdin"]);
     command.current_dir(repo.path());
     configure_test_home_env(&mut command, repo);
     configure_test_daemon_env(&mut command, repo);
@@ -81,7 +82,7 @@ fn run_prompt_event(repo: &TestRepo, agent: &str, hook_input: &str) -> (bool, St
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
 
-    let mut child = command.spawn().expect("failed to start prompt-event");
+    let mut child = command.spawn().expect("failed to start checkpoint");
     if let Some(stdin) = child.stdin.take() {
         use std::io::Write;
         let mut stdin = stdin;
@@ -92,7 +93,7 @@ fn run_prompt_event(repo: &TestRepo, agent: &str, hook_input: &str) -> (bool, St
 
     let output = child
         .wait_with_output()
-        .expect("failed to wait for prompt-event");
+        .expect("failed to wait for checkpoint");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     (output.status.success(), stdout, stderr)

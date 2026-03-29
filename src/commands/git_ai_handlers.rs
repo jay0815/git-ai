@@ -129,9 +129,6 @@ pub fn handle_git_ai(args: &[String]) {
         "checkpoint" => {
             handle_checkpoint(&args[1..]);
         }
-        "prompt-event" => {
-            commands::prompt_event::handle_prompt_event(&args[1..]);
-        }
         "blame" => {
             handle_ai_blame(&args[1..]);
             if is_interactive_terminal() {
@@ -403,6 +400,13 @@ fn handle_checkpoint(args: &[String]) {
                 i += 1;
             }
         }
+    }
+
+    // Emit prompt events as a side-effect of the checkpoint (best-effort).
+    // Done before the agent preset so events are emitted even if the preset fails.
+    if let Some(ref hi) = hook_input {
+        let agent_name = args.first().map(|s| s.as_str()).unwrap_or("unknown");
+        commands::prompt_event::emit_prompt_events_from_checkpoint(agent_name, hi);
     }
 
     let mut agent_run_result = None;

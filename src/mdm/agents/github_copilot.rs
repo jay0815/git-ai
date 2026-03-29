@@ -1,8 +1,8 @@
 use crate::error::GitAiError;
 use crate::mdm::hook_installer::{HookCheckResult, HookInstaller, HookInstallerParams};
 use crate::mdm::utils::{
-    MIN_CODE_VERSION, generate_diff, get_editor_version, home_dir, is_git_ai_prompt_event_command,
-    parse_version, resolve_editor_cli, settings_paths_for_products, should_process_settings_target,
+    MIN_CODE_VERSION, generate_diff, get_editor_version, home_dir, parse_version,
+    resolve_editor_cli, settings_paths_for_products, should_process_settings_target,
     version_meets_requirement, write_atomic,
 };
 use serde_json::{Value, json};
@@ -11,7 +11,6 @@ use std::path::PathBuf;
 
 const GITHUB_COPILOT_PRE_TOOL_CMD: &str = "checkpoint github-copilot --hook-input stdin";
 const GITHUB_COPILOT_POST_TOOL_CMD: &str = "checkpoint github-copilot --hook-input stdin";
-const GITHUB_COPILOT_PROMPT_EVENT_CMD: &str = "prompt-event github-copilot --hook-input stdin";
 
 pub struct GitHubCopilotInstaller;
 
@@ -92,12 +91,6 @@ impl HookInstaller for GitHubCopilotInstaller {
             params.binary_path.display(),
             GITHUB_COPILOT_POST_TOOL_CMD
         );
-        let prompt_event_desired = format!(
-            "{} {}",
-            params.binary_path.display(),
-            GITHUB_COPILOT_PROMPT_EVENT_CMD
-        );
-
         let hook_array_has = |hook_name: &str, predicate: &dyn Fn(&str) -> bool| -> bool {
             existing
                 .get("hooks")
@@ -121,15 +114,11 @@ impl HookInstaller for GitHubCopilotInstaller {
 
         let has_pre_up_to_date = hook_array_has("PreToolUse", &|cmd: &str| cmd == pre_desired);
         let has_post_up_to_date = hook_array_has("PostToolUse", &|cmd: &str| cmd == post_desired);
-        let has_prompt_event_up_to_date =
-            hook_array_has("PostToolUse", &|cmd: &str| cmd == prompt_event_desired);
 
         Ok(HookCheckResult {
             tool_installed: true,
             hooks_installed: has_pre_installed || has_post_installed,
-            hooks_up_to_date: has_pre_up_to_date
-                && has_post_up_to_date
-                && has_prompt_event_up_to_date,
+            hooks_up_to_date: has_pre_up_to_date && has_post_up_to_date,
         })
     }
 
@@ -166,12 +155,6 @@ impl HookInstaller for GitHubCopilotInstaller {
             params.binary_path.display(),
             GITHUB_COPILOT_POST_TOOL_CMD
         );
-        let prompt_event_cmd = format!(
-            "{} {}",
-            params.binary_path.display(),
-            GITHUB_COPILOT_PROMPT_EVENT_CMD
-        );
-
         let desired: Value = json!({
             "hooks": {
                 "PreToolUse": [
@@ -184,10 +167,6 @@ impl HookInstaller for GitHubCopilotInstaller {
                     {
                         "type": "command",
                         "command": post_tool_cmd
-                    },
-                    {
-                        "type": "command",
-                        "command": prompt_event_cmd
                     }
                 ]
             }
@@ -224,21 +203,13 @@ impl HookInstaller for GitHubCopilotInstaller {
                     None => continue,
                 };
 
-                // Determine which detection function to use
-                let is_same_kind: fn(&str) -> bool = if is_git_ai_prompt_event_command(desired_cmd)
-                {
-                    is_git_ai_prompt_event_command
-                } else {
-                    Self::is_github_copilot_checkpoint_command
-                };
-
                 let mut found_idx = None;
                 let mut needs_update = false;
 
                 for (idx, existing_hook) in existing_hooks.iter().enumerate() {
                     if let Some(existing_cmd) =
                         existing_hook.get("command").and_then(|c| c.as_str())
-                        && is_same_kind(existing_cmd)
+                        && Self::is_github_copilot_checkpoint_command(existing_cmd)
                         && found_idx.is_none()
                     {
                         found_idx = Some(idx);
@@ -261,7 +232,7 @@ impl HookInstaller for GitHubCopilotInstaller {
                                 current_idx += 1;
                                 true
                             } else if let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) {
-                                let keep = !is_same_kind(cmd);
+                                let keep = !Self::is_github_copilot_checkpoint_command(cmd);
                                 current_idx += 1;
                                 keep
                             } else {
@@ -326,7 +297,6 @@ impl HookInstaller for GitHubCopilotInstaller {
                 hooks_array.retain(|hook| {
                     if let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) {
                         !Self::is_github_copilot_checkpoint_command(cmd)
-                            && !is_git_ai_prompt_event_command(cmd)
                     } else {
                         true
                     }
@@ -438,11 +408,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(pre.len(), 1);
-            assert_eq!(
-                post.len(),
-                2,
-                "PostToolUse should have checkpoint + prompt-event"
-            );
+            assert_eq!(post.len(), 1);
             assert_eq!(
                 pre[0].get("command").and_then(|v| v.as_str()),
                 Some("/tmp/git-ai/bin/git-ai checkpoint github-copilot --hook-input stdin")
@@ -450,10 +416,6 @@ mod tests {
             assert_eq!(
                 post[0].get("command").and_then(|v| v.as_str()),
                 Some("/tmp/git-ai/bin/git-ai checkpoint github-copilot --hook-input stdin")
-            );
-            assert_eq!(
-                post[1].get("command").and_then(|v| v.as_str()),
-                Some("/tmp/git-ai/bin/git-ai prompt-event github-copilot --hook-input stdin")
             );
         });
     }
@@ -528,11 +490,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(pre.len(), 1);
-            assert_eq!(
-                post.len(),
-                2,
-                "PostToolUse should have checkpoint + prompt-event"
-            );
+            assert_eq!(post.len(), 1);
         });
     }
 
