@@ -129,10 +129,11 @@ fn graphite_style_restack_child_branch(
     new_head
 }
 
-fn should_skip_for_hooks_mode() -> bool {
+fn should_skip_test() -> bool {
     let mode = std::env::var("GIT_AI_TEST_GIT_MODE").unwrap_or_else(|_| "wrapper".to_string());
-    if matches!(GitTestMode::from_mode_name(&mode), GitTestMode::Hooks) {
-        eprintln!("SKIP: commit-tree/update-ref regression only runs in wrapper mode");
+    let git_mode = GitTestMode::from_mode_name(&mode);
+    if !matches!(git_mode, GitTestMode::Wrapper) {
+        eprintln!("SKIP: commit-tree/update-ref tests require pure wrapper mode (no hooks, no daemon)");
         return true;
     }
     false
@@ -140,7 +141,7 @@ fn should_skip_for_hooks_mode() -> bool {
 
 #[test]
 fn test_commit_tree_update_ref_preserves_authorship_notes_on_reparent() {
-    if should_skip_for_hooks_mode() {
+    if should_skip_test() {
         return;
     }
 
@@ -193,7 +194,7 @@ fn test_commit_tree_update_ref_preserves_authorship_notes_on_reparent() {
 
 #[test]
 fn test_commit_tree_update_ref_moves_working_log_to_rewritten_head() {
-    if should_skip_for_hooks_mode() {
+    if should_skip_test() {
         return;
     }
 
@@ -265,7 +266,7 @@ fn test_commit_tree_update_ref_moves_working_log_to_rewritten_head() {
 
 #[test]
 fn test_reset_keep_rewrite_preserves_authorship_notes_on_current_branch() {
-    if should_skip_for_hooks_mode() {
+    if should_skip_test() {
         return;
     }
 
@@ -318,7 +319,7 @@ fn test_reset_keep_rewrite_preserves_authorship_notes_on_current_branch() {
 
 #[test]
 fn test_update_ref_restack_after_parent_amend_preserves_child_attribution() {
-    if should_skip_for_hooks_mode() {
+    if should_skip_test() {
         return;
     }
 
@@ -391,7 +392,7 @@ fn test_update_ref_restack_after_parent_amend_preserves_child_attribution() {
 /// git-ai must detect the N-commit rewrite and remap all N authorship notes.
 #[test]
 fn test_graphite_style_multi_commit_single_update_ref() {
-    if should_skip_for_hooks_mode() {
+    if should_skip_test() {
         return;
     }
 
