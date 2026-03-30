@@ -112,23 +112,7 @@ pub fn handle_git(args: &[String]) {
 
     // Async mode: wrapper should behave as a pure passthrough to git,
     // but capture and send authoritative pre/post state to the daemon.
-    // However, if git hooks are also enabled in this repo, disable async mode
-    // to avoid conflicts where both wrapper and hooks try to use the daemon.
-    let async_mode_enabled = config::Config::get().feature_flags().async_mode;
-    let should_use_async_mode = if async_mode_enabled {
-        // Check if hooks are enabled in the current repo
-        match std::env::current_dir()
-            .ok()
-            .and_then(|cwd| crate::git::repository::discover_repository_in_path_no_git_exec(&cwd).ok())
-        {
-            Some(repo) => !crate::commands::git_hook_handlers::is_repo_hooks_enabled(&repo),
-            None => true, // No repo context, safe to use async mode
-        }
-    } else {
-        false
-    };
-
-    if should_use_async_mode {
+    if config::Config::get().feature_flags().async_mode {
         let parsed = parse_git_cli_args(args);
 
         // Read-only commands don't need wrapper state (the daemon fast-paths

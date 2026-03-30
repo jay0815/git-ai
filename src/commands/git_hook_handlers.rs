@@ -1020,7 +1020,7 @@ pub fn mark_repo_hooks_enabled(repo: &Repository) -> Result<bool, GitAiError> {
     Ok(true)
 }
 
-pub fn is_repo_hooks_enabled(repo: &Repository) -> bool {
+fn is_repo_hooks_enabled(repo: &Repository) -> bool {
     let path = repo_enablement_path(repo);
     path.exists() || path.symlink_metadata().is_ok()
 }
