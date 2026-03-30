@@ -286,7 +286,19 @@ pub fn run(args: &[String]) -> Result<HashMap<String, String>, GitAiError> {
 
     // Get absolute path to the current binary
     let binary_path = get_current_binary_path()?;
-    persist_install_api_base_config(&binary_path, dry_run)?;
+
+    // On first-time installs, enable async_mode via the CLI config command
+    if !dry_run
+        && crate::config::config_file_path_public()
+            .map(|p| !p.exists())
+            .unwrap_or(false)
+    {
+        let _ = std::process::Command::new(&binary_path)
+            .args(["config", "--add", "feature_flags.async_mode", "true"])
+            .output();
+    }
+
+    persist_install_config(&binary_path, dry_run)?;
     let params = HookInstallerParams { binary_path };
 
     // Run async operations with smol and convert result
@@ -299,20 +311,17 @@ pub fn run(args: &[String]) -> Result<HashMap<String, String>, GitAiError> {
     Ok(to_hashmap(statuses))
 }
 
-fn persist_install_api_base_config(binary_path: &Path, dry_run: bool) -> Result<bool, GitAiError> {
+fn persist_install_config(binary_path: &Path, dry_run: bool) -> Result<bool, GitAiError> {
     if dry_run {
         return Ok(false);
     }
 
-    let api_base = std::env::var("API_BASE").ok().filter(|s| !s.is_empty());
-    let Some(api_base) = api_base else {
-        return Ok(false);
-    };
-
     let mut file_config = crate::config::load_file_config_public().map_err(GitAiError::Generic)?;
     let mut changed = false;
 
-    if file_config.api_base_url.as_deref() != Some(api_base.as_str()) {
+    if let Some(api_base) = std::env::var("API_BASE").ok().filter(|s| !s.is_empty())
+        && file_config.api_base_url.as_deref() != Some(api_base.as_str())
+    {
         file_config.api_base_url = Some(api_base);
         changed = true;
     }
@@ -931,8 +940,7 @@ mod tests {
         let _userprofile = EnvVarGuard::set("USERPROFILE", temp.path().to_str().unwrap());
         let _api_base = EnvVarGuard::set("API_BASE", "https://enterprise.example");
 
-        let changed =
-            persist_install_api_base_config(&test_binary_path(&install_dir), false).unwrap();
+        let changed = persist_install_config(&test_binary_path(&install_dir), false).unwrap();
 
         assert!(changed);
 
@@ -976,7 +984,7 @@ mod tests {
         })
         .unwrap();
 
-        persist_install_api_base_config(&test_binary_path(&install_dir), false).unwrap();
+        persist_install_config(&test_binary_path(&install_dir), false).unwrap();
 
         let config = crate::config::load_file_config_public().unwrap();
         assert_eq!(
@@ -999,14 +1007,12 @@ mod tests {
         let _userprofile = EnvVarGuard::set("USERPROFILE", temp.path().to_str().unwrap());
         let _api_base = EnvVarGuard::remove("API_BASE");
 
-        let changed =
-            persist_install_api_base_config(&test_binary_path(&install_dir), false).unwrap();
+        let changed = persist_install_config(&test_binary_path(&install_dir), false).unwrap();
         assert!(!changed);
         assert!(!temp.path().join(".git-ai").join("config.json").exists());
 
         let _api_base = EnvVarGuard::set("API_BASE", "https://enterprise.example");
-        let changed =
-            persist_install_api_base_config(&test_binary_path(&install_dir), true).unwrap();
+        let changed = persist_install_config(&test_binary_path(&install_dir), true).unwrap();
         assert!(!changed);
         assert!(!temp.path().join(".git-ai").join("config.json").exists());
     }
