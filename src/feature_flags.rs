@@ -67,7 +67,7 @@ define_feature_flags!(
 /// wrapper-daemon repos get async_mode=true explicitly via apply_default_config_patch,
 /// which runs as a file-config override and takes precedence over this baseline.
 /// File config and the GIT_AI_ASYNC_MODE env var can also override this baseline.
-fn is_non_daemon_test_mode() -> bool {
+fn is_test_mode() -> bool {
     // Any test mode → disable async_mode at the baseline level.
     // wrapper-daemon repos re-enable it via config patch.
     std::env::var("GIT_AI_TEST_GIT_MODE").is_ok()
@@ -104,18 +104,19 @@ impl FeatureFlags {
     /// Build FeatureFlags from both file and environment variables
     /// Precedence: Environment > File > Test-mode baseline > Default
     /// - Starts with defaults
-    /// - In non-daemon test mode (GIT_AI_TEST_GIT_MODE=wrapper|hooks|both),
-    ///   async_mode is forced off so wrapper tests don't accidentally reach a daemon
+    /// - In any test mode (GIT_AI_TEST_GIT_MODE is set), async_mode is forced off
+    ///   so tests don't accidentally delegate to a daemon that isn't running.
+    ///   wrapper-daemon repos re-enable it via file config (apply_default_config_patch).
     /// - Applies file config overrides if present
     /// - Applies environment variable overrides if present (highest priority)
     pub(crate) fn from_env_and_file(file_flags: Option<DeserializableFeatureFlags>) -> Self {
         // Start with defaults
         let mut result = FeatureFlags::default();
 
-        // In non-daemon test modes disable async_mode at the baseline level so
-        // that plain wrapper tests don't try to delegate to a daemon that isn't
-        // running.  File config and GIT_AI_ASYNC_MODE env var can still override.
-        if is_non_daemon_test_mode() {
+        // In any test mode, disable async_mode at the baseline level so that tests
+        // don't try to delegate to a daemon that isn't running.
+        // wrapper-daemon repos re-enable via file config; GIT_AI_ASYNC_MODE can also override.
+        if is_test_mode() {
             result.async_mode = false;
         }
 
