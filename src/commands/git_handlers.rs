@@ -201,7 +201,9 @@ pub fn handle_git(args: &[String]) {
         // to ensure notes are synced even if daemon side effects fail or trace2
         // isn't properly configured. Note: plain `git fetch` should NOT fetch
         // authorship notes (only `git pull` should).
-        if exit_status.success() && let Some(repo) = repository {
+        if exit_status.success()
+            && let Some(repo) = repository
+        {
             match parsed.command.as_deref() {
                 Some("pull") => {
                     if let Ok(remote) = sync_authorship::fetch_remote_from_args(&repo, &parsed) {
@@ -210,11 +212,11 @@ pub fn handle_git(args: &[String]) {
                     }
                 }
                 Some("push") => {
-                    if !push_hooks::should_skip_authorship_push(&parsed.command_args) {
-                        if let Some(remote) = push_hooks::resolve_push_remote(&parsed, &repo) {
-                            // Push notes synchronously as fallback
-                            let _ = sync_authorship::push_authorship_notes(&repo, &remote);
-                        }
+                    if !push_hooks::should_skip_authorship_push(&parsed.command_args)
+                        && let Some(remote) = push_hooks::resolve_push_remote(&parsed, &repo)
+                    {
+                        // Push notes synchronously as fallback
+                        let _ = sync_authorship::push_authorship_notes(&repo, &remote);
                     }
                 }
                 _ => {}
