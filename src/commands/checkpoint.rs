@@ -546,6 +546,9 @@ fn resolve_explicit_path_execution(
         if matches!(status_entry, Some(entry) if entry.kind == EntryKind::Unmerged) {
             continue;
         }
+        if status_entry.is_none() && repo.is_path_git_ignored(&normalized_path)? {
+            continue;
+        }
 
         let explicit_dirty_content =
             explicit_dirty_file_content_if_text(working_log, &normalized_path);

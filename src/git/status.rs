@@ -1,5 +1,7 @@
 use crate::error::GitAiError;
-use crate::git::repository::{InternalGitProfile, Repository, exec_git_with_profile};
+use crate::git::repository::{
+    InternalGitProfile, Repository, exec_git_allow_nonzero, exec_git_with_profile,
+};
 use std::collections::HashSet;
 use std::str;
 
@@ -177,6 +179,25 @@ impl Repository {
         }
 
         Ok(entries)
+    }
+
+    pub fn is_path_git_ignored(&self, path: &str) -> Result<bool, GitAiError> {
+        let mut args = self.global_args_for_exec();
+        args.push("check-ignore".to_string());
+        args.push("--quiet".to_string());
+        args.push("--".to_string());
+        args.push(path.to_string());
+
+        let output = exec_git_allow_nonzero(&args)?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            code => Err(GitAiError::GitCliError {
+                code,
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                args,
+            }),
+        }
     }
 }
 

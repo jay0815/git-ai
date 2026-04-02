@@ -1,4 +1,6 @@
 use crate::repos::test_repo::TestRepo;
+use serde_json::json;
+use std::collections::HashMap;
 use std::fs;
 
 fn write_base_files(repo: &TestRepo) {
@@ -7,6 +9,20 @@ fn write_base_files(repo: &TestRepo) {
         .expect("failed to write alphabet.md");
     repo.stage_all_and_commit("initial commit")
         .expect("initial commit should succeed");
+}
+
+fn latest_checkpoint_files(repo: &TestRepo) -> Vec<String> {
+    let checkpoints = repo
+        .current_working_logs()
+        .read_all_checkpoints()
+        .expect("checkpoints should be readable");
+    checkpoints
+        .last()
+        .expect("latest checkpoint should exist")
+        .entries
+        .iter()
+        .map(|entry| entry.file.clone())
+        .collect()
 }
 
 #[test]
@@ -30,20 +46,9 @@ fn test_explicit_path_checkpoint_only_tracks_the_explicit_file() {
     repo.git_ai(&["checkpoint", "mock_ai", "alphabet.md"])
         .expect("second explicit checkpoint should succeed");
 
-    let checkpoints = repo
-        .current_working_logs()
-        .read_all_checkpoints()
-        .expect("checkpoints should be readable");
-    let latest = checkpoints.last().expect("latest checkpoint should exist");
-    let latest_files = latest
-        .entries
-        .iter()
-        .map(|entry| entry.file.as_str())
-        .collect::<Vec<_>>();
-
     assert_eq!(
-        latest_files,
-        vec!["alphabet.md"],
+        latest_checkpoint_files(&repo),
+        vec!["alphabet.md".to_string()],
         "explicit path checkpoints must not expand to other dirty AI-touched files"
     );
 }
@@ -117,5 +122,82 @@ fn test_explicit_path_checkpoint_skips_binary_replacements() {
     assert!(
         checkpoints.is_empty(),
         "explicit-path checkpoints should skip files whose current contents are binary"
+    );
+}
+
+#[test]
+fn test_explicit_path_checkpoint_skips_gitignored_worktree_files() {
+    let repo = TestRepo::new();
+    write_base_files(&repo);
+
+    fs::write(repo.path().join(".gitignore"), "ignored/**\n").expect("failed to write .gitignore");
+    fs::create_dir_all(repo.path().join("ignored")).expect("failed to create ignored dir");
+    fs::write(
+        repo.path().join("alphabet.md"),
+        "line touched by explicit checkpoint\n",
+    )
+    .expect("failed to update alphabet.md");
+    fs::write(
+        repo.path().join("ignored").join("generated.md"),
+        "ignored worktree content\n",
+    )
+    .expect("failed to write ignored file");
+
+    repo.git_ai(&[
+        "checkpoint",
+        "mock_ai",
+        "alphabet.md",
+        "ignored/generated.md",
+    ])
+    .expect("explicit checkpoint should succeed");
+
+    assert_eq!(
+        latest_checkpoint_files(&repo),
+        vec!["alphabet.md".to_string()],
+        "explicit-path checkpoints should skip .gitignore'd worktree files"
+    );
+}
+
+#[test]
+fn test_explicit_path_checkpoint_skips_gitignored_dirty_snapshot_files() {
+    let repo = TestRepo::new();
+    write_base_files(&repo);
+
+    fs::write(repo.path().join(".gitignore"), "ignored/**\n").expect("failed to write .gitignore");
+    fs::create_dir_all(repo.path().join("ignored")).expect("failed to create ignored dir");
+
+    let tracked_path = repo.path().join("alphabet.md");
+    let ignored_path = repo.path().join("ignored").join("generated.md");
+    let tracked_path_str = tracked_path.to_string_lossy().to_string();
+    let ignored_path_str = ignored_path.to_string_lossy().to_string();
+
+    fs::write(&ignored_path, "ignored worktree content\n").expect("failed to write ignored file");
+
+    let hook_input = json!({
+        "type": "ai_agent",
+        "repo_working_dir": repo.path(),
+        "edited_filepaths": [tracked_path_str.clone(), ignored_path_str.clone()],
+        "transcript": {"messages": []},
+        "agent_name": "test-agent",
+        "model": "test-model",
+        "conversation_id": "test-123",
+        "dirty_files": HashMap::from([
+            (tracked_path_str, "alphabet snapshot content\n".to_string()),
+            (ignored_path_str, "ignored snapshot content\n".to_string()),
+        ]),
+    });
+
+    repo.git_ai(&[
+        "checkpoint",
+        "agent-v1",
+        "--hook-input",
+        &hook_input.to_string(),
+    ])
+    .expect("explicit dirty snapshot checkpoint should succeed");
+
+    assert_eq!(
+        latest_checkpoint_files(&repo),
+        vec!["alphabet.md".to_string()],
+        "explicit-path checkpoints should skip .gitignore'd dirty snapshot files"
     );
 }
