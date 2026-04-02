@@ -89,13 +89,11 @@ pub fn handle_logs(args: &[String]) {
 
     // Resolve transcript paths for all agents
     let mut transcript_files: Vec<(String, PathBuf)> = Vec::new(); // (agent_tool, path)
-    let mut database_files: Vec<(String, PathBuf)> = Vec::new(); // (label, path)
 
     for (agent_id, custom_attrs) in &agents {
-        let (transcripts, databases) =
-            resolve_transcript_paths(agent_id, custom_attrs.as_ref(), &repo_cwd);
+        let paths = resolve_transcript_paths(agent_id, custom_attrs.as_ref(), &repo_cwd);
 
-        for path in transcripts {
+        for path in paths {
             if path.exists() {
                 transcript_files.push((agent_id.tool.clone(), path));
             } else {
@@ -106,17 +104,30 @@ pub fn handle_logs(args: &[String]) {
                 );
             }
         }
-        for (label, path) in databases {
-            if path.exists() {
-                database_files.push((label, path));
-            } else {
-                eprintln!(
-                    "Warning: database not found for {} agent: {}",
-                    agent_id.tool,
-                    path.display()
-                );
-            }
-        }
+    }
+
+    // Collect working log files
+    let base_sha = &authorship_log.metadata.base_commit_sha;
+    let working_log_dir = repo.storage.working_logs.join(base_sha);
+    // Also check for debug-mode "old-<sha>" directory
+    let old_working_log_dir = repo.storage.working_logs.join(format!("old-{}", base_sha));
+
+    let effective_wl_dir = if working_log_dir.is_dir() {
+        Some(&working_log_dir)
+    } else if old_working_log_dir.is_dir() {
+        Some(&old_working_log_dir)
+    } else {
+        None
+    };
+
+    let mut working_log_files: Vec<(String, PathBuf)> = Vec::new(); // (relative_name, path)
+    if let Some(wl_dir) = effective_wl_dir {
+        collect_dir_recursive(wl_dir, wl_dir, &mut working_log_files);
+    } else if !base_sha.is_empty() {
+        eprintln!(
+            "Warning: working log directory not found for base commit {} (cleaned up after commit)",
+            &base_sha[..7.min(base_sha.len())]
+        );
     }
 
     // Build zip
@@ -154,6 +165,19 @@ pub fn handle_logs(args: &[String]) {
     // metadata/git-ai-version.txt
     add_to_zip(&mut zip, &format!("{}/metadata/git-ai-version.txt", prefix), GIT_AI_VERSION.as_bytes(), options);
 
+    // working-log/<relative-path>
+    for (relative_name, path) in &working_log_files {
+        let zip_path = format!("{}/working-log/{}", prefix, relative_name);
+        match fs::read(path) {
+            Ok(data) => add_to_zip(&mut zip, &zip_path, &data, options),
+            Err(e) => eprintln!(
+                "Warning: failed to read working log {}: {}",
+                path.display(),
+                e
+            ),
+        }
+    }
+
     // transcripts/<agent-tool>/<filename>
     for (agent_tool, path) in &transcript_files {
         let filename = path.file_name().unwrap_or_default().to_string_lossy();
@@ -168,18 +192,6 @@ pub fn handle_logs(args: &[String]) {
         }
     }
 
-    // databases/<label>
-    for (label, path) in &database_files {
-        let zip_path = format!("{}/databases/{}", prefix, label);
-        match fs::read(path) {
-            Ok(data) => add_to_zip(&mut zip, &zip_path, &data, options),
-            Err(e) => eprintln!(
-                "Warning: failed to read {}: {}",
-                path.display(),
-                e
-            ),
-        }
-    }
 
     if let Err(e) = zip.finish() {
         eprintln!("Failed to finalize zip: {}", e);
@@ -187,7 +199,7 @@ pub fn handle_logs(args: &[String]) {
     }
 
     // Print summary
-    let total_files = transcript_files.len() + database_files.len() + 4; // 4 metadata files
+    let total_files = transcript_files.len() + working_log_files.len() + 4; // 4 metadata files
     println!("Created {} ({} files)", output_path.display(), total_files);
 
     let agent_tools: Vec<String> = agents.iter().map(|(a, _)| a.tool.clone()).collect();
@@ -196,8 +208,8 @@ pub fn handle_logs(args: &[String]) {
     if !transcript_files.is_empty() {
         println!("Transcripts: {}", transcript_files.len());
     }
-    if !database_files.is_empty() {
-        println!("Databases: {}", database_files.len());
+    if !working_log_files.is_empty() {
+        println!("Working logs: {}", working_log_files.len());
     }
 }
 
@@ -262,21 +274,19 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
 
 // -- Transcript path resolution --
 
-/// Resolve transcript file paths and database paths for a given agent.
-/// Returns (transcript_paths, database_paths) where database_paths are (label, path) tuples.
+/// Resolve transcript file paths for a given agent.
 fn resolve_transcript_paths(
     agent_id: &AgentId,
     custom_attrs: Option<&std::collections::HashMap<String, String>>,
     repo_cwd: &std::path::Path,
-) -> (Vec<PathBuf>, Vec<(String, PathBuf)>) {
+) -> Vec<PathBuf> {
     let mut transcripts = Vec::new();
-    let mut databases = Vec::new();
 
     let home = match dirs::home_dir() {
         Some(h) => h,
         None => {
             eprintln!("Warning: could not determine home directory");
-            return (transcripts, databases);
+            return transcripts;
         }
     };
 
@@ -319,17 +329,6 @@ fn resolve_transcript_paths(
                 }
             }
 
-            // Collect the Cursor SQLite DB
-            let vscdb = if cfg!(target_os = "macos") {
-                home.join("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
-            } else if cfg!(target_os = "windows") {
-                home.join("AppData/Roaming/Cursor/User/globalStorage/state.vscdb")
-            } else {
-                home.join(".config/Cursor/User/globalStorage/state.vscdb")
-            };
-            if vscdb.exists() {
-                databases.push(("cursor-state.vscdb".to_string(), vscdb));
-            }
         }
         "codex" => {
             let codex_home = env::var("CODEX_HOME")
@@ -379,22 +378,6 @@ fn resolve_transcript_paths(
                 }
             }
 
-            // VS Code workspace storage (SQLite)
-            let vscdb = if cfg!(target_os = "macos") {
-                home.join("Library/Application Support/Code/User/workspaceStorage")
-            } else if cfg!(target_os = "windows") {
-                home.join("AppData/Roaming/Code/User/workspaceStorage")
-            } else {
-                home.join(".config/Code/User/workspaceStorage")
-            };
-            // Look for state.vscdb in workspace storage dirs
-            let pattern = vscdb.join("*/state.vscdb").to_string_lossy().to_string();
-            if let Ok(entries) = glob::glob(&pattern) {
-                for entry in entries.flatten() {
-                    databases.push(("copilot-state.vscdb".to_string(), entry));
-                    break; // Just take the first one
-                }
-            }
         }
         "windsurf" => {
             let transcript = home
@@ -434,23 +417,12 @@ fn resolve_transcript_paths(
             }
         }
         "opencode" => {
-            // Check for env var override first
+            // OpenCode stores data in SQLite (skipped — too large for bundle).
+            // Check legacy flat-file storage as fallback.
             let storage_path = env::var("GIT_AI_OPENCODE_STORAGE_PATH")
                 .map(PathBuf::from)
-                .ok();
-
-            // Primary: the SQLite database
-            let db_path = storage_path
-                .clone()
-                .unwrap_or_else(|| home.join(".local/share/opencode"))
-                .join("opencode.db");
-            if db_path.exists() {
-                databases.push(("opencode.db".to_string(), db_path));
-            }
-
-            // Legacy fallback
+                .unwrap_or_else(|_| home.join(".opencode"));
             let legacy_path = storage_path
-                .unwrap_or_else(|| home.join(".opencode"))
                 .join("storage/message")
                 .join(&agent_id.id);
             if legacy_path.is_dir() {
@@ -466,7 +438,7 @@ fn resolve_transcript_paths(
             if let Some(attrs) = custom_attrs {
                 if let Some(path) = attrs.get("transcript_path") {
                     transcripts.push(PathBuf::from(path));
-                    return (transcripts, databases);
+                    return transcripts;
                 }
             }
 
@@ -508,7 +480,7 @@ fn resolve_transcript_paths(
             if let Some(attrs) = custom_attrs {
                 if let Some(path) = attrs.get("transcript_path") {
                     transcripts.push(PathBuf::from(path));
-                    return (transcripts, databases);
+                    return transcripts;
                 }
             }
 
@@ -549,7 +521,7 @@ fn resolve_transcript_paths(
         }
     }
 
-    (transcripts, databases)
+    transcripts
 }
 
 // -- Path encoding helpers --
@@ -587,6 +559,35 @@ fn get_commit_diff(repo: &Repository, sha: &str) -> String {
     match exec_git(&args) {
         Ok(output) => String::from_utf8(output.stdout).unwrap_or_default(),
         Err(e) => format!("Failed to get commit diff: {}", e),
+    }
+}
+
+// -- Directory collection helper --
+
+/// Recursively collect all files in a directory, producing (relative_path, absolute_path) pairs.
+/// Skips the `blobs/` subdirectory since those are full file snapshots that bloat the bundle.
+fn collect_dir_recursive(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // Skip blobs/ (full file snapshots) and INITIAL (seed attribution state)
+            let name = path.file_name().unwrap_or_default();
+            if name == "blobs" {
+                continue;
+            }
+            collect_dir_recursive(base, &path, out);
+        } else if path.file_name().unwrap_or_default() != "INITIAL" {
+            let relative = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            out.push((relative, path));
+        }
     }
 }
 
