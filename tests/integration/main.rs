@@ -71,6 +71,7 @@ mod realistic_complex_edits;
 mod rebase;
 mod rebase_benchmark;
 mod reset;
+mod revert_attribution;
 mod search;
 mod secrets_benchmark;
 mod share_tui_comprehensive;
