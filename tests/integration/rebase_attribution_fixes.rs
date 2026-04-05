@@ -1,5 +1,6 @@
 use crate::repos::test_file::ExpectedLineExt;
 use crate::repos::test_repo::TestRepo;
+#[cfg(not(target_os = "windows"))]
 use git_ai::authorship::authorship_log_serialization::AuthorshipLog;
 
 // =============================================================================
