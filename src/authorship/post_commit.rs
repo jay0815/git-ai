@@ -653,7 +653,16 @@ fn record_commit_metrics(
     stats: &crate::authorship::stats::CommitStats,
     checkpoints: &[Checkpoint],
 ) {
-    use crate::metrics::{CommittedValues, EventAttributes, record};
+    use crate::metrics::{CommittedValues, EventAttributes, MOCK_AI_TOOL, record};
+
+    // Skip recording if any tool in the breakdown is mock_ai (test preset).
+    if stats
+        .tool_model_breakdown
+        .keys()
+        .any(|k| k.starts_with(MOCK_AI_TOOL))
+    {
+        return;
+    }
 
     // Build parallel arrays: index 0 = "all" (aggregate), index 1+ = per tool/model
     let mut tool_model_pairs: Vec<String> = vec!["all".to_string()];

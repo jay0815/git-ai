@@ -17,10 +17,17 @@ pub use events::{AgentUsageValues, CheckpointValues, CommittedValues, InstallHoo
 pub use pos_encoded::PosEncoded;
 pub use types::{EventValues, METRICS_API_VERSION, MetricEvent, MetricsBatch};
 
+/// The mock_ai tool name used for testing. Events from this tool are
+/// filtered out of telemetry to avoid polluting real metrics data.
+pub const MOCK_AI_TOOL: &str = "mock_ai";
+
 /// Record an event with values and attributes.
 ///
 /// Events are sent to the daemon telemetry worker which batches
 /// and uploads them to the API.
+///
+/// Events originating from the `mock_ai` test preset are silently
+/// dropped so they never reach telemetry.
 ///
 /// # Example
 ///
@@ -43,6 +50,9 @@ pub use types::{EventValues, METRICS_API_VERSION, MetricEvent, MetricsBatch};
 /// record(values, attrs);
 /// ```
 pub fn record<V: EventValues>(values: V, attrs: EventAttributes) {
+    if attrs.has_mock_ai_tool() {
+        return;
+    }
     let event = MetricEvent::new(&values, attrs.to_sparse());
     // Write directly to observability log
     crate::observability::log_metrics(vec![event]);
