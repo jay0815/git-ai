@@ -62,6 +62,8 @@ pub fn log_message(message: &str, level: &str, context: Option<serde_json::Value
 /// Log a batch of metric events (via daemon telemetry worker).
 ///
 /// Events are batched into envelopes of up to 250 events each.
+/// Events originating from the `mock_ai` test preset are silently
+/// dropped so they never reach telemetry.
 pub fn log_metrics(
     #[cfg_attr(any(test, feature = "test-support"), allow(unused))] events: Vec<MetricEvent>,
 ) {
@@ -70,6 +72,7 @@ pub fn log_metrics(
 
     #[cfg(not(any(test, feature = "test-support")))]
     {
+        let events: Vec<MetricEvent> = events.into_iter().filter(|e| !is_mock_ai(e)).collect();
         if events.is_empty() {
             return;
         }
@@ -82,6 +85,35 @@ pub fn log_metrics(
             submit_telemetry_envelope(vec![envelope]);
         }
     }
+}
+
+/// Returns `true` when the event originates from the `mock_ai` test preset.
+///
+/// Checks both the tool attribute (position 20, set for AgentUsage /
+/// Checkpoint / InstallHooks events) and the `tool_model_pairs` committed
+/// value (position 3, keys like `"mock_ai::unknown"`).
+#[cfg(not(any(test, feature = "test-support")))]
+fn is_mock_ai(event: &MetricEvent) -> bool {
+    use crate::metrics::{MOCK_AI_TOOL, attrs::attr_pos, events::committed_pos};
+    use serde_json::Value;
+
+    let tool_pos = attr_pos::TOOL.to_string();
+    if let Some(Value::String(tool)) = event.attrs.get(&tool_pos)
+        && tool == MOCK_AI_TOOL
+    {
+        return true;
+    }
+
+    let pairs_pos = committed_pos::TOOL_MODEL_PAIRS.to_string();
+    if let Some(Value::Array(pairs)) = event.values.get(&pairs_pos)
+        && pairs
+            .iter()
+            .any(|p| matches!(p, Value::String(s) if s.starts_with(MOCK_AI_TOOL)))
+    {
+        return true;
+    }
+
+    false
 }
 
 #[cfg(test)]
