@@ -205,11 +205,6 @@ impl EventAttributes {
             }
         }
     }
-
-    /// Returns true if the tool attribute is set to the mock_ai test preset.
-    pub fn has_mock_ai_tool(&self) -> bool {
-        matches!(&self.tool, Some(Some(t)) if t == super::MOCK_AI_TOOL)
-    }
 }
 
 impl PosEncoded for EventAttributes {
@@ -525,23 +520,5 @@ mod tests {
         assert_eq!(MODEL, 21);
         assert_eq!(PROMPT_ID, 22);
         assert_eq!(EXTERNAL_PROMPT_ID, 23);
-    }
-
-    #[test]
-    fn test_has_mock_ai_tool_true() {
-        let attrs = EventAttributes::with_version("1.0.0").tool("mock_ai");
-        assert!(attrs.has_mock_ai_tool());
-    }
-
-    #[test]
-    fn test_has_mock_ai_tool_false() {
-        let attrs = EventAttributes::with_version("1.0.0").tool("cursor");
-        assert!(!attrs.has_mock_ai_tool());
-    }
-
-    #[test]
-    fn test_has_mock_ai_tool_unset() {
-        let attrs = EventAttributes::with_version("1.0.0");
-        assert!(!attrs.has_mock_ai_tool());
     }
 }

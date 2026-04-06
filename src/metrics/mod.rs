@@ -50,12 +50,38 @@ pub const MOCK_AI_TOOL: &str = "mock_ai";
 /// record(values, attrs);
 /// ```
 pub fn record<V: EventValues>(values: V, attrs: EventAttributes) {
-    if attrs.has_mock_ai_tool() {
+    let event = MetricEvent::new(&values, attrs.to_sparse());
+    if is_mock_ai(&event) {
         return;
     }
-    let event = MetricEvent::new(&values, attrs.to_sparse());
-    // Write directly to observability log
     crate::observability::log_metrics(vec![event]);
+}
+
+/// Returns `true` when the event originates from the `mock_ai` test preset.
+///
+/// Checks both the tool attribute (position 20, set for AgentUsage /
+/// Checkpoint / InstallHooks events) and the `tool_model_pairs` committed
+/// value (position 3, keys like `"mock_ai::unknown"`).
+fn is_mock_ai(event: &MetricEvent) -> bool {
+    use serde_json::Value;
+
+    let tool_pos = attrs::attr_pos::TOOL.to_string();
+    if let Some(Value::String(tool)) = event.attrs.get(&tool_pos)
+        && tool == MOCK_AI_TOOL
+    {
+        return true;
+    }
+
+    let pairs_pos = events::committed_pos::TOOL_MODEL_PAIRS.to_string();
+    if let Some(Value::Array(pairs)) = event.values.get(&pairs_pos)
+        && pairs
+            .iter()
+            .any(|p| matches!(p, Value::String(s) if s.starts_with(MOCK_AI_TOOL)))
+    {
+        return true;
+    }
+
+    false
 }
 
 #[cfg(test)]
