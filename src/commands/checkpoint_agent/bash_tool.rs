@@ -253,6 +253,7 @@ impl StatDiffResult {
 }
 
 /// What the bash tool handler decided to do.
+#[derive(Debug)]
 pub enum BashCheckpointAction {
     /// Take a pre-snapshot (PreToolUse).
     TakePreSnapshot,
@@ -272,6 +273,7 @@ pub enum HookEvent {
 }
 
 /// Result from `handle_bash_tool` combining the action with optional captured checkpoint info.
+#[derive(Debug)]
 pub struct BashToolResult {
     /// The checkpoint action (unchanged from previous API).
     pub action: BashCheckpointAction,
@@ -286,6 +288,7 @@ struct ActiveBashSnapshotScan {
 }
 
 /// Info about a captured checkpoint prepared by the bash tool.
+#[derive(Debug)]
 pub struct CapturedCheckpointInfo {
     pub capture_id: String,
     pub repo_working_dir: String,
@@ -1053,6 +1056,7 @@ fn capture_file_contents(repo_root: &Path, file_paths: &[PathBuf]) -> HashMap<St
 /// error, etc.) for graceful degradation — the caller simply skips the
 /// captured-checkpoint path when watermarks are unavailable.
 /// Watermarks returned by the daemon for a single worktree.
+#[derive(Debug)]
 pub struct DaemonWatermarks {
     /// Per-file mtime watermarks from scoped checkpoints.
     per_file: HashMap<String, u128>,
