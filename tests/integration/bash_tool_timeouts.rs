@@ -48,7 +48,7 @@ fn test_snapshot_walk_timeout_returns_err() {
     }
 
     set_walk_timeout_ms_for_test(0);
-    let result = snapshot(&root, "wt-sess", "wt-t1", None);
+    let result = snapshot(&root, "wt-sess", "wt-t1", None, None);
     reset_timeout_overrides_for_test();
 
     assert!(

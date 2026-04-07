@@ -320,7 +320,13 @@ impl InflightBashAgentContext {
 }
 
 fn scan_active_bash_snapshots(repo_root: &Path) -> ActiveBashSnapshotScan {
-    let Ok(cache_dir) = snapshot_cache_dir(repo_root) else {
+    let Ok(git_dir) = get_git_dir(repo_root) else {
+        return ActiveBashSnapshotScan {
+            has_inflight_snapshot: false,
+            latest_context: None,
+        };
+    };
+    let Ok(cache_dir) = snapshot_cache_dir(&git_dir) else {
         return ActiveBashSnapshotScan {
             has_inflight_snapshot: false,
             latest_context: None,
@@ -526,8 +532,7 @@ fn get_git_dir(repo_root: &Path) -> Result<PathBuf, GitAiError> {
 /// Used as a cold-start watermark proxy when the daemon has no worktree
 /// watermark yet.  Only called when `wm = Some(w)` with `w.worktree = None`,
 /// so passing `wm = None` (tests, non-daemon mode) always bypasses this.
-pub fn git_index_mtime_ns(repo_root: &Path) -> Option<u128> {
-    let git_dir = get_git_dir(repo_root).ok()?;
+pub fn git_index_mtime_ns(git_dir: &Path) -> Option<u128> {
     let index_path = git_dir.join("index");
     let mtime = fs::metadata(&index_path).ok()?.modified().ok()?;
     Some(system_time_to_nanos(mtime))
@@ -615,11 +620,17 @@ pub fn should_include_new_file(gitignore: &Gitignore, path: &Path, is_dir: bool)
 /// `wm` should be the result of a recent daemon watermark query.  Pass
 /// `None` to skip watermark filtering entirely (no daemon context, or direct
 /// `snapshot()` callers such as tests and `git_status_fallback`).
+///
+/// `git_dir` is the pre-computed `.git` directory path (from `get_git_dir()`).
+/// Pass `Some(&path)` from `handle_bash_tool` to avoid redundant subprocess
+/// spawns.  Pass `None` from tests or `git_status_fallback` where the git dir
+/// is not pre-computed (the cold-start watermark proxy will be skipped).
 pub fn snapshot(
     repo_root: &Path,
     session_id: &str,
     tool_use_id: &str,
     wm: Option<&DaemonWatermarks>,
+    git_dir: Option<&Path>,
 ) -> Result<StatSnapshot, GitAiError> {
     let start = Instant::now();
     let invocation_key = format!("{}:{}", session_id, tool_use_id);
@@ -636,7 +647,7 @@ pub fn snapshot(
     // snapshot() callers (e.g. tests, git_status_fallback) are unaffected.
     let effective_worktree_wm: Option<u128> = match wm {
         Some(w) if w.worktree.is_some() => w.worktree,
-        Some(_) => git_index_mtime_ns(repo_root),
+        Some(_) => git_dir.and_then(git_index_mtime_ns),
         None => None,
     };
 
@@ -821,15 +832,15 @@ pub fn diff(pre: &StatSnapshot, post: &StatSnapshot) -> StatDiffResult {
 // ---------------------------------------------------------------------------
 
 /// Get the directory for storing bash snapshots.
-fn snapshot_cache_dir(repo_root: &Path) -> Result<PathBuf, GitAiError> {
-    let cache_dir = get_git_dir(repo_root)?.join("ai").join("bash_snapshots");
+fn snapshot_cache_dir(git_dir: &Path) -> Result<PathBuf, GitAiError> {
+    let cache_dir = git_dir.join("ai").join("bash_snapshots");
     fs::create_dir_all(&cache_dir).map_err(GitAiError::IoError)?;
     Ok(cache_dir)
 }
 
 /// Save a pre-snapshot to the cache.
-pub fn save_snapshot(snapshot: &StatSnapshot) -> Result<(), GitAiError> {
-    let cache_dir = snapshot_cache_dir(&snapshot.repo_root)?;
+pub fn save_snapshot(snapshot: &StatSnapshot, git_dir: &Path) -> Result<(), GitAiError> {
+    let cache_dir = snapshot_cache_dir(git_dir)?;
     let filename = sanitize_key(&snapshot.invocation_key);
     let path = cache_dir.join(format!("{}.json", filename));
 
@@ -848,10 +859,10 @@ pub fn save_snapshot(snapshot: &StatSnapshot) -> Result<(), GitAiError> {
 
 /// Load a pre-snapshot from the cache and remove it (consume).
 pub fn load_and_consume_snapshot(
-    repo_root: &Path,
+    git_dir: &Path,
     invocation_key: &str,
 ) -> Result<Option<StatSnapshot>, GitAiError> {
-    let cache_dir = snapshot_cache_dir(repo_root)?;
+    let cache_dir = snapshot_cache_dir(git_dir)?;
     let filename = sanitize_key(invocation_key);
     let path = cache_dir.join(format!("{}.json", filename));
 
@@ -879,8 +890,8 @@ pub fn load_and_consume_snapshot(
 }
 
 /// Clean up stale snapshots older than SNAPSHOT_STALE_SECS.
-pub fn cleanup_stale_snapshots(repo_root: &Path) -> Result<(), GitAiError> {
-    let cache_dir = snapshot_cache_dir(repo_root)?;
+pub fn cleanup_stale_snapshots(git_dir: &Path) -> Result<(), GitAiError> {
+    let cache_dir = snapshot_cache_dir(git_dir)?;
 
     if let Ok(entries) = fs::read_dir(&cache_dir) {
         let now = SystemTime::now();
@@ -1371,8 +1382,8 @@ pub fn has_active_bash_inflight(repo_root: &Path) -> bool {
 
 /// Sidecar file path used to correlate pre and post hooks for agents that do
 /// not provide a unique per-call `tool_use_id` (e.g. Gemini CLI, ContinueCli).
-fn bash_sidecar_path(repo_root: &Path, session_id: &str) -> Option<PathBuf> {
-    snapshot_cache_dir(repo_root)
+fn bash_sidecar_path(git_dir: &Path, session_id: &str) -> Option<PathBuf> {
+    snapshot_cache_dir(git_dir)
         .ok()
         .map(|d| d.join(format!("last_id_{}.txt", sanitize_key(session_id))))
 }
@@ -1401,7 +1412,7 @@ pub fn latest_inflight_bash_agent_context(repo_root: &Path) -> Option<InflightBa
 /// Returns the resolved ID (either the original or a sidecar-backed UUID).
 fn resolve_bash_tool_use_id(
     hook_event: HookEvent,
-    repo_root: &Path,
+    git_dir: &Path,
     session_id: &str,
     tool_use_id: &str,
 ) -> String {
@@ -1414,7 +1425,7 @@ fn resolve_bash_tool_use_id(
     match hook_event {
         HookEvent::PreToolUse => {
             let id = uuid::Uuid::new_v4().to_string();
-            if let Some(path) = bash_sidecar_path(repo_root, session_id)
+            if let Some(path) = bash_sidecar_path(git_dir, session_id)
                 && let Err(e) = fs::write(&path, &id)
             {
                 debug_log(&format!(
@@ -1426,7 +1437,7 @@ fn resolve_bash_tool_use_id(
             id
         }
         HookEvent::PostToolUse => {
-            let path = bash_sidecar_path(repo_root, session_id);
+            let path = bash_sidecar_path(git_dir, session_id);
             if let Some(ref p) = path
                 && let Ok(id) = fs::read_to_string(p)
             {
@@ -1456,6 +1467,7 @@ fn resolve_bash_tool_use_id(
 /// and returns the list of changed files.
 fn handle_bash_pre_tool_use_internal(
     repo_root: &Path,
+    git_dir: &Path,
     session_id: &str,
     tool_use_id: &str,
     inflight_agent_context: Option<InflightBashAgentContext>,
@@ -1490,7 +1502,7 @@ fn handle_bash_pre_tool_use_internal(
     }
 
     // Clean up stale snapshots
-    let _ = cleanup_stale_snapshots(repo_root);
+    let _ = cleanup_stale_snapshots(git_dir);
 
     // Query daemon watermarks first so snapshot() can filter out
     // wm-covered files and embed the watermarks for the post-hook.
@@ -1502,10 +1514,10 @@ fn handle_bash_pre_tool_use_internal(
     }
 
     // Take and store pre-snapshot (filtered by watermarks)
-    match snapshot(repo_root, session_id, tool_use_id, wm.as_ref()) {
+    match snapshot(repo_root, session_id, tool_use_id, wm.as_ref(), Some(git_dir)) {
         Ok(mut snap) => {
             snap.inflight_agent_context = inflight_agent_context;
-            save_snapshot(&snap)?;
+            save_snapshot(&snap, git_dir)?;
             debug_log(&format!(
                 "Pre-snapshot stored for invocation {} ({} entries, effective_wm={:?})",
                 invocation_key,
@@ -1547,8 +1559,9 @@ pub fn handle_bash_pre_tool_use_with_context(
     agent_id: &AgentId,
     agent_metadata: Option<&HashMap<String, String>>,
 ) -> Result<BashToolResult, GitAiError> {
+    let git_dir = get_git_dir(repo_root)?;
     let tool_use_id =
-        resolve_bash_tool_use_id(HookEvent::PreToolUse, repo_root, session_id, tool_use_id);
+        resolve_bash_tool_use_id(HookEvent::PreToolUse, &git_dir, session_id, tool_use_id);
     let inflight_agent_context = InflightBashAgentContext {
         session_id: session_id.to_string(),
         tool_use_id: tool_use_id.clone(),
@@ -1557,6 +1570,7 @@ pub fn handle_bash_pre_tool_use_with_context(
     };
     handle_bash_pre_tool_use_internal(
         repo_root,
+        &git_dir,
         session_id,
         tool_use_id.as_str(),
         Some(inflight_agent_context),
@@ -1569,9 +1583,13 @@ pub fn handle_bash_tool(
     session_id: &str,
     tool_use_id: &str,
 ) -> Result<BashToolResult, GitAiError> {
+    // Compute git_dir once — every helper below receives this instead of
+    // calling get_git_dir() independently.
+    let git_dir = get_git_dir(repo_root)?;
+
     // Resolve the effective tool_use_id — generates/reads a sidecar UUID when
     // the caller passes the generic "bash" fallback (no per-call ID from agent).
-    let tool_use_id = resolve_bash_tool_use_id(hook_event, repo_root, session_id, tool_use_id);
+    let tool_use_id = resolve_bash_tool_use_id(hook_event, &git_dir, session_id, tool_use_id);
     let tool_use_id = tool_use_id.as_str();
     let invocation_key = format!("{}:{}", session_id, tool_use_id);
 
@@ -1605,11 +1623,11 @@ pub fn handle_bash_tool(
 
     match hook_event {
         HookEvent::PreToolUse => {
-            handle_bash_pre_tool_use_internal(repo_root, session_id, tool_use_id, None)
+            handle_bash_pre_tool_use_internal(repo_root, &git_dir, session_id, tool_use_id, None)
         }
         HookEvent::PostToolUse => {
             // Try to load the pre-snapshot
-            let pre_snapshot = load_and_consume_snapshot(repo_root, &invocation_key)?;
+            let pre_snapshot = load_and_consume_snapshot(&git_dir, &invocation_key)?;
 
             match pre_snapshot {
                 Some(pre) => {
@@ -1637,7 +1655,13 @@ pub fn handle_bash_tool(
                         } else {
                             None
                         };
-                    match snapshot(repo_root, session_id, tool_use_id, post_wm.as_ref()) {
+                    match snapshot(
+                        repo_root,
+                        session_id,
+                        tool_use_id,
+                        post_wm.as_ref(),
+                        Some(&git_dir),
+                    ) {
                         Ok(post) => {
                             let diff_result = diff(&pre, &post);
 
@@ -1697,6 +1721,106 @@ pub fn handle_bash_tool(
                     })
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared bash tool integration helper
+// ---------------------------------------------------------------------------
+
+/// Result of the shared bash tool integration logic used by all presets.
+#[derive(Debug)]
+pub struct BashToolIntegration {
+    /// Whether the tool was classified as a bash tool.
+    pub is_bash_tool: bool,
+    /// For PreToolUse: the captured checkpoint ID (if any).
+    pub pre_hook_capture_id: Option<String>,
+    /// For PostToolUse: the edited file paths (None = use caller's default).
+    pub edited_filepaths: Option<Vec<String>>,
+    /// For PostToolUse: the captured checkpoint ID from post-hook (if any).
+    pub post_hook_capture_id: Option<String>,
+}
+
+/// Shared bash tool integration for all agent presets.
+///
+/// Handles tool classification, pre/post hook dispatch, result extraction,
+/// and error logging. Returns structured results the caller uses to build
+/// its `AgentRunResult`.
+pub fn integrate_bash_tool(
+    agent: Agent,
+    tool_name: Option<&str>,
+    hook_event_name: &str,
+    repo_root: Option<&Path>,
+    session_id: &str,
+    tool_use_id: &str,
+    fallback_filepaths: Option<Vec<String>>,
+) -> BashToolIntegration {
+    let is_bash_tool = tool_name
+        .map(|name| classify_tool(agent, name) == ToolClass::Bash)
+        .unwrap_or(false);
+
+    if !is_bash_tool {
+        return BashToolIntegration {
+            is_bash_tool: false,
+            pre_hook_capture_id: None,
+            edited_filepaths: fallback_filepaths,
+            post_hook_capture_id: None,
+        };
+    }
+
+    let repo_root = match repo_root {
+        Some(p) => p,
+        None => {
+            return BashToolIntegration {
+                is_bash_tool: true,
+                pre_hook_capture_id: None,
+                edited_filepaths: None,
+                post_hook_capture_id: None,
+            };
+        }
+    };
+
+    let is_pre = matches!(hook_event_name, "PreToolUse" | "preToolUse" | "BeforeTool");
+
+    if is_pre {
+        let capture_id =
+            match handle_bash_tool(HookEvent::PreToolUse, repo_root, session_id, tool_use_id) {
+                Ok(r) => r.captured_checkpoint.map(|info| info.capture_id),
+                Err(e) => {
+                    debug_log(&format!("Bash tool pre-hook error: {}", e));
+                    None
+                }
+            };
+        BashToolIntegration {
+            is_bash_tool: true,
+            pre_hook_capture_id: capture_id,
+            edited_filepaths: None,
+            post_hook_capture_id: None,
+        }
+    } else {
+        let result = handle_bash_tool(HookEvent::PostToolUse, repo_root, session_id, tool_use_id);
+        let (edited_filepaths, post_capture_id) = match result {
+            Ok(r) => {
+                let paths = match &r.action {
+                    BashCheckpointAction::Checkpoint(paths) => Some(paths.clone()),
+                    BashCheckpointAction::NoChanges
+                    | BashCheckpointAction::Fallback
+                    | BashCheckpointAction::TakePreSnapshot => None,
+                };
+                let cap_id = r.captured_checkpoint.map(|info| info.capture_id);
+                (paths, cap_id)
+            }
+            Err(e) => {
+                debug_log(&format!("Bash tool post-hook error: {}", e));
+                (None, None)
+            }
+        };
+        BashToolIntegration {
+            is_bash_tool: true,
+            pre_hook_capture_id: None,
+            edited_filepaths,
+            post_hook_capture_id: post_capture_id,
         }
     }
 }
@@ -2175,14 +2299,15 @@ mod tests {
             .current_dir(dir.path())
             .output()
             .unwrap();
+        let git_dir = dir.path().join(".git");
 
         let session_id = "test-session-abc";
 
         // First pre-hook: should generate UUID1
-        let id1 = resolve_bash_tool_use_id(HookEvent::PreToolUse, dir.path(), session_id, "bash");
+        let id1 = resolve_bash_tool_use_id(HookEvent::PreToolUse, &git_dir, session_id, "bash");
 
         // Second pre-hook (while first post-hook hasn't fired yet): should generate UUID2
-        let id2 = resolve_bash_tool_use_id(HookEvent::PreToolUse, dir.path(), session_id, "bash");
+        let id2 = resolve_bash_tool_use_id(HookEvent::PreToolUse, &git_dir, session_id, "bash");
 
         assert_ne!(id1, id2, "sequential pre-hooks must produce different IDs");
         assert_ne!(id1, "bash");
@@ -2190,7 +2315,7 @@ mod tests {
 
         // Post-hook reads back the LAST written sidecar (id2)
         let id_post =
-            resolve_bash_tool_use_id(HookEvent::PostToolUse, dir.path(), session_id, "bash");
+            resolve_bash_tool_use_id(HookEvent::PostToolUse, &git_dir, session_id, "bash");
         assert_eq!(
             id_post, id2,
             "post-hook should recover the last pre-hook ID"
@@ -2198,7 +2323,7 @@ mod tests {
 
         // Sidecar is consumed; second post-hook falls back to "bash"
         let id_post2 =
-            resolve_bash_tool_use_id(HookEvent::PostToolUse, dir.path(), session_id, "bash");
+            resolve_bash_tool_use_id(HookEvent::PostToolUse, &git_dir, session_id, "bash");
         assert_eq!(
             id_post2, "bash",
             "after sidecar consumed, falls back to 'bash'"
@@ -2213,14 +2338,15 @@ mod tests {
             .current_dir(dir.path())
             .output()
             .unwrap();
+        let git_dir = dir.path().join(".git");
 
         let real_id = "toolu_real_unique_id_12345";
         let resolved =
-            resolve_bash_tool_use_id(HookEvent::PreToolUse, dir.path(), "session", real_id);
+            resolve_bash_tool_use_id(HookEvent::PreToolUse, &git_dir, "session", real_id);
         assert_eq!(resolved, real_id, "real IDs pass through unchanged");
 
         // No sidecar file should have been created
-        let sidecar = bash_sidecar_path(dir.path(), "session");
+        let sidecar = bash_sidecar_path(&git_dir, "session");
         if let Some(path) = sidecar {
             assert!(!path.exists(), "sidecar must not be created for real IDs");
         }
@@ -2381,7 +2507,8 @@ mod tests {
             .current_dir(dir.path())
             .output()
             .unwrap();
-        let cache = snapshot_cache_dir(dir.path()).unwrap();
+        let git_dir = dir.path().join(".git");
+        let cache = snapshot_cache_dir(&git_dir).unwrap();
         make_snapshot_file(&cache, "session1_call1");
         assert!(has_active_bash_inflight(dir.path()));
     }
@@ -2395,7 +2522,8 @@ mod tests {
             .current_dir(dir.path())
             .output()
             .unwrap();
-        let cache = snapshot_cache_dir(dir.path()).unwrap();
+        let git_dir = dir.path().join(".git");
+        let cache = snapshot_cache_dir(&git_dir).unwrap();
         let snap = make_snapshot_file(&cache, "session1_call1");
         assert!(has_active_bash_inflight(dir.path()));
         fs::remove_file(&snap).unwrap(); // post-hook consumes it
@@ -2411,7 +2539,8 @@ mod tests {
             .current_dir(dir.path())
             .output()
             .unwrap();
-        let cache = snapshot_cache_dir(dir.path()).unwrap();
+        let git_dir = dir.path().join(".git");
+        let cache = snapshot_cache_dir(&git_dir).unwrap();
         let snap = make_snapshot_file(&cache, "session_stale");
         // Backdate the mtime beyond the stale threshold
         let stale_time = SystemTime::now()
@@ -2437,7 +2566,8 @@ mod tests {
             .current_dir(dir.path())
             .output()
             .unwrap();
-        let cache = snapshot_cache_dir(dir.path()).unwrap();
+        let git_dir = dir.path().join(".git");
+        let cache = snapshot_cache_dir(&git_dir).unwrap();
 
         // Two bash calls start (pre-hooks fire)
         let snap1 = make_snapshot_file(&cache, "session1_callA");
@@ -2469,7 +2599,8 @@ mod tests {
             .current_dir(dir.path())
             .output()
             .unwrap();
-        let cache = snapshot_cache_dir(dir.path()).unwrap();
+        let git_dir = dir.path().join(".git");
+        let cache = snapshot_cache_dir(&git_dir).unwrap();
         // Write a sidecar (the kind resolve_bash_tool_use_id creates)
         fs::write(cache.join("last_id_mysession.txt"), "some-uuid").unwrap();
         assert!(

@@ -1256,11 +1256,12 @@ fn test_bash_provenance_snapshot_diff_echo_redirect() {
     let root = repo_root(&repo);
     add_and_commit(&repo, "init.txt", "seed", "initial commit");
 
-    let pre = snapshot(&root, "snap-echo", "t1", None).expect("pre-snapshot should succeed");
+    let pre = snapshot(&root, "snap-echo", "t1", None, None).expect("pre-snapshot should succeed");
 
     run_bash(&repo, "sh", &["-c", "echo 'snap test' > snap_created.txt"]);
 
-    let post = snapshot(&root, "snap-echo", "t2", None).expect("post-snapshot should succeed");
+    let post =
+        snapshot(&root, "snap-echo", "t2", None, None).expect("post-snapshot should succeed");
     let result = diff(&pre, &post);
 
     let created: Vec<String> = result
@@ -1286,7 +1287,7 @@ fn test_bash_provenance_snapshot_diff_sed_modification() {
     let root = repo_root(&repo);
     add_and_commit(&repo, "editable.txt", "old text old text", "initial commit");
 
-    let pre = snapshot(&root, "snap-sed", "t1", None).expect("pre-snapshot should succeed");
+    let pre = snapshot(&root, "snap-sed", "t1", None, None).expect("pre-snapshot should succeed");
 
     thread::sleep(Duration::from_millis(50));
     run_bash(
@@ -1298,7 +1299,7 @@ fn test_bash_provenance_snapshot_diff_sed_modification() {
         ],
     );
 
-    let post = snapshot(&root, "snap-sed", "t2", None).expect("post-snapshot should succeed");
+    let post = snapshot(&root, "snap-sed", "t2", None, None).expect("post-snapshot should succeed");
     let result = diff(&pre, &post);
 
     let modified: Vec<String> = result

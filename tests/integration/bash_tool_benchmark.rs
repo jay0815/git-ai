@@ -753,7 +753,7 @@ fn test_bash_tool_diff_performance() {
     }
 
     // Take a baseline snapshot.
-    let pre = bash_tool::snapshot(&repo_root, "diff-bench", "pre", None)
+    let pre = bash_tool::snapshot(&repo_root, "diff-bench", "pre", None, None)
         .expect("pre-snapshot should succeed");
 
     // Modify 1% of files to simulate realistic edits.
@@ -785,7 +785,7 @@ fn test_bash_tool_diff_performance() {
     println!("Modified {} files for diff benchmark", modified_count);
 
     // Take a post-snapshot.
-    let post = bash_tool::snapshot(&repo_root, "diff-bench", "post", None)
+    let post = bash_tool::snapshot(&repo_root, "diff-bench", "post", None, None)
         .expect("post-snapshot should succeed");
 
     // Benchmark diff() over multiple iterations.
@@ -919,7 +919,7 @@ fn test_bash_tool_snapshot_entry_count_accuracy() {
         .expect("failed to write new file");
     }
 
-    let snap = bash_tool::snapshot(&repo_root, "accuracy", "check", None)
+    let snap = bash_tool::snapshot(&repo_root, "accuracy", "check", None, None)
         .expect("snapshot should succeed");
 
     let entry_count = snap.entries.len();
