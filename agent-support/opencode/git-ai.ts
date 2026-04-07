@@ -210,54 +210,43 @@ export const GitAiPlugin: Plugin = async (ctx) => {
   return {
     "tool.execute.before": async (input, output) => {
       const toolInput = output.args
-      const toolCwd = extractToolCwd((input as { cwd?: unknown }).cwd ?? (input as { workdir?: unknown }).workdir, output.args)
+      const inputAny = input as Record<string, unknown>
+      const toolCwd = extractToolCwd(
+        inputAny["cwd"] ?? inputAny["workdir"],
+        output.args,
+      )
 
+      let repoDir: string | null = null
       if (isEditTool(input.tool)) {
-        // File-edit tools: extract file paths for rich repo resolution
         const filePaths = extractFilePaths(toolInput, toolCwd)
-        const repoDir = await resolveRepoDir(filePaths, toolCwd)
-        if (!repoDir) {
-          return
-        }
-
-        pendingCalls.set(input.callID, { repoDir, sessionID: input.sessionID, toolInput })
-
-        try {
-          const hookInput = JSON.stringify({
-            hook_event_name: "PreToolUse",
-            session_id: input.sessionID,
-            tool_use_id: input.callID,
-            cwd: repoDir,
-            tool_name: input.tool,
-            tool_input: toolInput,
-          })
-          await $`echo ${hookInput} | ${GIT_AI_BIN} checkpoint opencode --hook-input stdin`.quiet()
-        } catch (error) {
-          console.error("[git-ai] Failed to create human checkpoint:", String(error))
-        }
-
+        repoDir = await resolveRepoDir(filePaths, toolCwd)
       } else if (isBashTool(input.tool)) {
-        // Bash tool: no file paths in input; resolve repo from workdir or cwd
-        const repoDir = await resolveRepoDir([], toolCwd)
-        if (!repoDir) {
-          return
-        }
+        repoDir = await resolveRepoDir([], toolCwd)
+      }
 
-        pendingCalls.set(input.callID, { repoDir, sessionID: input.sessionID, toolInput })
+      if (!repoDir) return
 
-        try {
-          const hookInput = JSON.stringify({
-            hook_event_name: "PreToolUse",
-            session_id: input.sessionID,
-            tool_use_id: input.callID,
-            cwd: repoDir,
-            tool_name: input.tool,
-            tool_input: toolInput,
-          })
-          await $`echo ${hookInput} | ${GIT_AI_BIN} checkpoint opencode --hook-input stdin`.quiet()
-        } catch (error) {
-          console.error("[git-ai] Failed to create human checkpoint:", String(error))
-        }
+      pendingCalls.set(input.callID, {
+        repoDir,
+        sessionID: input.sessionID,
+        toolInput,
+      })
+
+      try {
+        const hookInput = JSON.stringify({
+          hook_event_name: "PreToolUse",
+          session_id: input.sessionID,
+          tool_use_id: input.callID,
+          cwd: repoDir,
+          tool_name: input.tool,
+          tool_input: toolInput,
+        })
+        await $`echo ${hookInput} | ${GIT_AI_BIN} checkpoint opencode --hook-input stdin`.quiet()
+      } catch (error) {
+        console.error(
+          "[git-ai] Failed to create human checkpoint:",
+          String(error),
+        )
       }
     },
 
