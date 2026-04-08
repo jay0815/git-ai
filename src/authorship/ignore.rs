@@ -27,16 +27,16 @@ const DEFAULT_IGNORE_PATTERNS: &[&str] = &[
     "**/*.snap.new",
     "**/drizzle/meta/**",
     // Sensitive files — prevent secrets from being captured in checkpoint blobs
-    ".env",
-    ".env.*",
+    "**/.env",
+    "**/.env.*",
     "*.pem",
     "*.key",
     "*.p12",
     "*.pfx",
     "*.crt",
-    "credentials.json",
-    "service-account.json",
-    ".netrc",
+    "**/credentials.json",
+    "**/service-account.json",
+    "**/.netrc",
 ];
 
 #[derive(Clone, Debug)]

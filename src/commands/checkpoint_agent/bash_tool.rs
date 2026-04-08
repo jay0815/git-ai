@@ -181,9 +181,12 @@ impl StatEntry {
     fn extract_ctime(meta: &fs::Metadata) -> Option<SystemTime> {
         use std::os::unix::fs::MetadataExt;
         let ctime_secs = meta.ctime();
-        let ctime_nsecs = meta.ctime_nsec() as u32;
-        if ctime_secs >= 0 {
-            Some(SystemTime::UNIX_EPOCH + std::time::Duration::new(ctime_secs as u64, ctime_nsecs))
+        let ctime_nsecs = meta.ctime_nsec();
+        if ctime_secs >= 0 && (0..1_000_000_000).contains(&ctime_nsecs) {
+            Some(
+                SystemTime::UNIX_EPOCH
+                    + std::time::Duration::new(ctime_secs as u64, ctime_nsecs as u32),
+            )
         } else {
             None
         }
@@ -320,11 +323,21 @@ impl InflightBashAgentContext {
 }
 
 fn scan_active_bash_snapshots(repo_root: &Path) -> ActiveBashSnapshotScan {
-    let Ok(git_dir) = get_git_dir(repo_root) else {
-        return ActiveBashSnapshotScan {
-            has_inflight_snapshot: false,
-            latest_context: None,
-        };
+    // Fast path: try repo_root/.git directly (avoids subprocess spawn).
+    // Falls back to `git rev-parse --git-dir` for worktrees where .git is a file.
+    let git_dir_candidate = repo_root.join(".git");
+    let git_dir = if git_dir_candidate.is_dir() {
+        git_dir_candidate
+    } else {
+        match get_git_dir(repo_root) {
+            Ok(d) => d,
+            Err(_) => {
+                return ActiveBashSnapshotScan {
+                    has_inflight_snapshot: false,
+                    latest_context: None,
+                }
+            }
+        }
     };
     let Ok(cache_dir) = snapshot_cache_dir(&git_dir) else {
         return ActiveBashSnapshotScan {
@@ -803,21 +816,11 @@ pub fn snapshot(
 pub fn diff(pre: &StatSnapshot, post: &StatSnapshot) -> StatDiffResult {
     let mut result = StatDiffResult::default();
 
-    // Files in post but not pre: new files or previously wm-covered files
-    // now modified by bash. Both need attribution; the distinction doesn't
-    // matter since all_changed_paths() merges created + modified.
-    for path in post.entries.keys() {
-        if !pre.entries.contains_key(path) {
-            result.created.push(path.clone());
-        }
-    }
-
-    // Files in both but stat-tuple differs.
     for (path, post_entry) in &post.entries {
-        if let Some(pre_entry) = pre.entries.get(path)
-            && pre_entry != post_entry
-        {
-            result.modified.push(path.clone());
+        match pre.entries.get(path) {
+            None => result.created.push(path.clone()),
+            Some(pre_entry) if pre_entry != post_entry => result.modified.push(path.clone()),
+            _ => {}
         }
     }
 
@@ -846,7 +849,10 @@ pub fn save_snapshot(snapshot: &StatSnapshot, git_dir: &Path) -> Result<(), GitA
 
     let data = serde_json::to_vec(snapshot).map_err(GitAiError::JsonError)?;
 
-    fs::write(&path, data).map_err(GitAiError::IoError)?;
+    // Write to a temp file then atomic rename so readers never see a partial file.
+    let tmp_path = cache_dir.join(format!("{}.tmp", filename));
+    fs::write(&tmp_path, data).map_err(GitAiError::IoError)?;
+    fs::rename(&tmp_path, &path).map_err(GitAiError::IoError)?;
 
     debug_log(&format!(
         "Saved pre-snapshot: {} ({} entries)",
@@ -907,7 +913,7 @@ pub fn cleanup_stale_snapshots(git_dir: &Path) -> Result<(), GitAiError> {
             let path = entry.path();
             if path
                 .extension()
-                .is_some_and(|e| e == "json" || e == "consumed")
+                .is_some_and(|e| e == "json" || e == "consumed" || e == "tmp")
                 && let Ok(meta) = fs::metadata(&path)
                 && let Ok(modified) = meta.modified()
                 && let Ok(age) = now.duration_since(modified)

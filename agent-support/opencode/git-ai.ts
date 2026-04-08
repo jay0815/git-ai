@@ -209,6 +209,8 @@ export const GitAiPlugin: Plugin = async (ctx) => {
 
   return {
     "tool.execute.before": async (input, output) => {
+      if (!isEditTool(input.tool) && !isBashTool(input.tool)) return
+
       const toolInput = output.args
       const inputAny = input as Record<string, unknown>
       const toolCwd = extractToolCwd(
