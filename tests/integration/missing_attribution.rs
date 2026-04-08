@@ -18,7 +18,7 @@
 //! H17: Merge commit attribution note behavior
 //! H18: Append checkpoint on corrupt JSONL destroys valid prior data
 
-use crate::repos::test_file::ExpectedLineExt;
+use crate::repos::test_file::{ExpectedLineExt, TestFile};
 use crate::repos::test_repo::TestRepo;
 use std::fs;
 
@@ -64,6 +64,14 @@ fn test_h1_no_ai_checkpoint_produces_empty_authorship_note() {
          prompts: {:?}",
         commit.authorship_log.metadata.prompts
     );
+
+    // Verify via blame that all lines are human-attributed
+    let mut file = TestFile::from_existing_file(repo.path().join("human_code.rs"), &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "fn human_written() {".human(),
+        "    println!(\"no AI here\");".human(),
+        "}".human(),
+    ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -81,17 +89,17 @@ fn test_h2_base_commit_sha_mismatch_after_amend() {
     let repo = TestRepo::new();
 
     // Step 1: Create initial commit
-    let mut file = repo.filename("code.rs");
-    fs::write(repo.path().join("code.rs"), "fn main() {}\n    // base\n").unwrap();
+    let code_path = repo.path().join("code.rs");
+    fs::write(&code_path, "fn main() {}\n    // base\n").unwrap();
     repo.stage_all_and_commit("initial").unwrap();
 
     // Step 2: AI writes new code (checkpoint keyed to current HEAD)
-    file.set_contents_no_stage(crate::lines![
-        "fn main() {}",
-        "    // base",
-        "    println!(\"AI wrote this\");".ai(),
-        "    println!(\"AI also wrote this\");".ai(),
-    ]);
+    fs::write(
+        &code_path,
+        "fn main() {}\n    // base\n    println!(\"AI wrote this\");\n    println!(\"AI also wrote this\");\n",
+    )
+    .unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "code.rs"]).unwrap();
 
     // Step 3: Amend the previous commit (changes HEAD SHA).
     // Using raw git to bypass git-ai hooks — simulating user running git directly.
@@ -99,9 +107,11 @@ fn test_h2_base_commit_sha_mismatch_after_amend() {
     repo.git_og(&["commit", "--amend", "--no-edit"]).unwrap();
 
     // Step 4: Write more AI code AFTER the amend (keyed to new HEAD).
-    let new_content = "fn main() {}\n    // base\n    println!(\"AI wrote this\");\n    println!(\"AI also wrote this\");\n    println!(\"More AI after amend\");\n";
-    let file_path = repo.path().join("code.rs");
-    fs::write(&file_path, new_content).unwrap();
+    fs::write(
+        &code_path,
+        "fn main() {}\n    // base\n    println!(\"AI wrote this\");\n    println!(\"AI also wrote this\");\n    println!(\"More AI after amend\");\n",
+    )
+    .unwrap();
     repo.git_ai(&["checkpoint", "mock_ai", "code.rs"]).unwrap();
     repo.git(&["add", "-A"]).unwrap();
 
@@ -118,6 +128,21 @@ fn test_h2_base_commit_sha_mismatch_after_amend() {
          prompts: {:?}",
         commit.authorship_log.attestations, commit.authorship_log.metadata.prompts
     );
+
+    // Verify line-level blame attribution.
+    // Lines 1-2 are from the initial commit (human). Lines 3-4 were written as AI
+    // before the amend, but the amend (git_og) lost their checkpoint keying.
+    // The post-amend checkpoint (step 4) covered the whole file, so lines 3-4
+    // are also attributed to the amend commit (Test User/human). Only line 5
+    // (written after amend with a fresh checkpoint) is AI-attributed.
+    let mut file = TestFile::from_existing_file(code_path, &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "fn main() {}".human(),
+        "    // base".human(),
+        "    println!(\"AI wrote this\");".human(),
+        "    println!(\"AI also wrote this\");".human(),
+        "    println!(\"More AI after amend\");".ai(),
+    ]);
 }
 
 /// H2b: Directly prove that a SHA mismatch causes silent data loss.
@@ -191,6 +216,14 @@ fn test_h2b_direct_working_log_sha_mismatch() {
             );
         }
     }
+
+    // All lines should blame as human since the AI checkpoint was under the wrong SHA
+    let mut file = TestFile::from_existing_file(file_path, &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "print('hello')".human(),
+        "print('AI generated line 1')".human(),
+        "print('AI generated line 2')".human(),
+    ]);
 }
 
 /// H2c: The "amend poisoning" scenario — the most likely real-world cause.
@@ -202,12 +235,13 @@ fn test_h2c_amend_then_new_commit_attribution_chain() {
     let repo = TestRepo::new();
 
     // Step 1: Base commit
-    let mut file = repo.filename("chain.rs");
-    fs::write(repo.path().join("chain.rs"), "// base\n").unwrap();
+    let chain_path = repo.path().join("chain.rs");
+    fs::write(&chain_path, "// base\n").unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
     // Step 2-3: AI writes, commit normally
-    file.set_contents_no_stage(crate::lines!["// base", "fn ai_v1() {}".ai()]);
+    fs::write(&chain_path, "// base\nfn ai_v1() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "chain.rs"]).unwrap();
     let commit_b = repo.stage_all_and_commit("commit B").unwrap();
     assert!(
         !commit_b.authorship_log.attestations.is_empty(),
@@ -215,11 +249,8 @@ fn test_h2c_amend_then_new_commit_attribution_chain() {
     );
 
     // Step 4: AI writes more code (keyed to commit B's SHA)
-    file.set_contents_no_stage(crate::lines![
-        "// base",
-        "fn ai_v1() {}",
-        "fn ai_v2() {}".ai(),
-    ]);
+    fs::write(&chain_path, "// base\nfn ai_v1() {}\nfn ai_v2() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "chain.rs"]).unwrap();
 
     // Step 5: User amends (changes HEAD from B to B').
     // Using git_og to bypass git-ai hooks — simulating raw git amend.
@@ -227,12 +258,12 @@ fn test_h2c_amend_then_new_commit_attribution_chain() {
     repo.git_og(&["commit", "--amend", "--no-edit"]).unwrap();
 
     // Step 6: AI writes even more code (after amend, HEAD is now B')
-    file.set_contents_no_stage(crate::lines![
-        "// base",
-        "fn ai_v1() {}",
-        "fn ai_v2() {}",
-        "fn ai_v3() {}".ai(),
-    ]);
+    fs::write(
+        &chain_path,
+        "// base\nfn ai_v1() {}\nfn ai_v2() {}\nfn ai_v3() {}\n",
+    )
+    .unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "chain.rs"]).unwrap();
 
     // Step 7: Commit C
     let commit_c = repo.stage_all_and_commit("commit C").unwrap();
@@ -245,6 +276,15 @@ fn test_h2c_amend_then_new_commit_attribution_chain() {
          attestations: {:?}",
         commit_c.authorship_log.attestations
     );
+
+    // Verify line-level blame: ai_v3 should be AI, earlier lines human from amend
+    let mut file = TestFile::from_existing_file(chain_path, &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "// base".human(),
+        "fn ai_v1() {}".human(),
+        "fn ai_v2() {}".human(),
+        "fn ai_v3() {}".ai(),
+    ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -258,17 +298,17 @@ fn test_h3_pre_commit_does_not_skip_when_ai_checkpoints_exist() {
     let repo = TestRepo::new();
 
     // Create base commit
-    let mut file = repo.filename("code.rs");
-    fs::write(repo.path().join("code.rs"), "fn main() {}\n").unwrap();
+    let code_path = repo.path().join("code.rs");
+    fs::write(&code_path, "fn main() {}\n").unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
     // AI writes new code
-    file.set_contents_no_stage(crate::lines![
-        "fn main() {}",
-        "fn ai_function() {".ai(),
-        "    println!(\"AI\");".ai(),
-        "}".ai(),
-    ]);
+    fs::write(
+        &code_path,
+        "fn main() {}\nfn ai_function() {\n    println!(\"AI\");\n}\n",
+    )
+    .unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "code.rs"]).unwrap();
 
     // Commit — this triggers pre-commit (Human checkpoint) then post-commit
     let commit = repo.stage_all_and_commit("ai code").unwrap();
@@ -282,6 +322,15 @@ fn test_h3_pre_commit_does_not_skip_when_ai_checkpoints_exist() {
          prompts: {:?}",
         commit.authorship_log.attestations, commit.authorship_log.metadata.prompts
     );
+
+    // Verify line-level blame attribution
+    let mut file = TestFile::from_existing_file(code_path, &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "fn main() {}".human(),
+        "fn ai_function() {".ai(),
+        "    println!(\"AI\");".ai(),
+        "}".ai(),
+    ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,12 +343,13 @@ fn test_h4_rapid_sequential_commits_preserve_ai_attribution() {
     let repo = TestRepo::new();
 
     // Base commit
-    let mut file = repo.filename("rapid.rs");
-    fs::write(repo.path().join("rapid.rs"), "// base\n").unwrap();
+    let rapid_path = repo.path().join("rapid.rs");
+    fs::write(&rapid_path, "// base\n").unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
     // First AI edit + commit
-    file.set_contents_no_stage(crate::lines!["// base", "fn first_ai() {}".ai(),]);
+    fs::write(&rapid_path, "// base\nfn first_ai() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "rapid.rs"]).unwrap();
     let commit1 = repo.stage_all_and_commit("first ai commit").unwrap();
 
     let commit1_has_ai = !commit1.authorship_log.attestations.is_empty();
@@ -311,11 +361,12 @@ fn test_h4_rapid_sequential_commits_preserve_ai_attribution() {
     );
 
     // Second AI edit + commit (immediately after first)
-    file.set_contents_no_stage(crate::lines![
-        "// base",
-        "fn first_ai() {}".ai(),
-        "fn second_ai() {}".ai(),
-    ]);
+    fs::write(
+        &rapid_path,
+        "// base\nfn first_ai() {}\nfn second_ai() {}\n",
+    )
+    .unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "rapid.rs"]).unwrap();
     let commit2 = repo.stage_all_and_commit("second ai commit").unwrap();
 
     let commit2_has_ai = !commit2.authorship_log.attestations.is_empty();
@@ -326,6 +377,16 @@ fn test_h4_rapid_sequential_commits_preserve_ai_attribution() {
          commit2 attestations: {:?}",
         commit1.authorship_log.attestations, commit2.authorship_log.attestations
     );
+
+    // Verify line-level blame after second commit.
+    // first_ai was checkpointed as AI in commit 1 — blame traces to that commit.
+    // second_ai was checkpointed as AI in commit 2.
+    let mut file = TestFile::from_existing_file(rapid_path, &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "// base".human(),
+        "fn first_ai() {}".ai(),
+        "fn second_ai() {}".ai(),
+    ]);
 }
 
 /// H4b: Three rapid commits with AI, verifying the middle one doesn't lose data.
@@ -333,12 +394,14 @@ fn test_h4_rapid_sequential_commits_preserve_ai_attribution() {
 fn test_h4b_three_rapid_commits_all_have_ai_attribution() {
     let repo = TestRepo::new();
 
-    let mut file = repo.filename("triple.rs");
-    fs::write(repo.path().join("triple.rs"), "// base\n").unwrap();
+    let triple_path = repo.path().join("triple.rs");
+    fs::write(&triple_path, "// base\n").unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
     // Commit 1
-    file.set_contents_no_stage(crate::lines!["// base", "fn one() {}".ai()]);
+    fs::write(&triple_path, "// base\nfn one() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "triple.rs"])
+        .unwrap();
     let c1 = repo.stage_all_and_commit("commit 1").unwrap();
     assert!(
         !c1.authorship_log.attestations.is_empty(),
@@ -346,7 +409,9 @@ fn test_h4b_three_rapid_commits_all_have_ai_attribution() {
     );
 
     // Commit 2
-    file.set_contents_no_stage(crate::lines!["// base", "fn one() {}", "fn two() {}".ai(),]);
+    fs::write(&triple_path, "// base\nfn one() {}\nfn two() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "triple.rs"])
+        .unwrap();
     let c2 = repo.stage_all_and_commit("commit 2").unwrap();
     assert!(
         !c2.authorship_log.attestations.is_empty(),
@@ -354,12 +419,13 @@ fn test_h4b_three_rapid_commits_all_have_ai_attribution() {
     );
 
     // Commit 3
-    file.set_contents_no_stage(crate::lines![
-        "// base",
-        "fn one() {}",
-        "fn two() {}",
-        "fn three() {}".ai(),
-    ]);
+    fs::write(
+        &triple_path,
+        "// base\nfn one() {}\nfn two() {}\nfn three() {}\n",
+    )
+    .unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "triple.rs"])
+        .unwrap();
     let c3 = repo.stage_all_and_commit("commit 3").unwrap();
     assert!(
         !c3.authorship_log.attestations.is_empty(),
@@ -367,6 +433,17 @@ fn test_h4b_three_rapid_commits_all_have_ai_attribution() {
          attestations: {:?}",
         c3.authorship_log.attestations
     );
+
+    // Verify line-level blame after all three commits.
+    // Each function was checkpointed as AI in its respective commit —
+    // blame traces each line to its original commit where it was introduced.
+    let mut file = TestFile::from_existing_file(triple_path, &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "// base".human(),
+        "fn one() {}".ai(),
+        "fn two() {}".ai(),
+        "fn three() {}".ai(),
+    ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +485,14 @@ fn test_h5_line_ending_normalization_drops_ai_attribution() {
          attestations: {:?}",
         commit.authorship_log.attestations
     );
+
+    // Verify line-level blame: AI lines 2-3 should be attributed
+    let mut file = TestFile::from_existing_file(repo.path().join("normalized.txt"), &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "line 1".human(),
+        "AI line 2".ai(),
+        "AI line 3".ai(),
+    ]);
 }
 
 /// H5b: Human checkpoint with all-human line_attributions overwrites AI data.
@@ -516,17 +601,19 @@ fn test_h6_multi_file_commit_partial_checkpoint_coverage() {
     let repo = TestRepo::new();
 
     // Base commit
-    let mut file_a = repo.filename("file_a.rs");
-    fs::write(repo.path().join("file_a.rs"), "// file a base\n").unwrap();
-    fs::write(repo.path().join("file_b.rs"), "// file b base\n").unwrap();
+    let file_a_path = repo.path().join("file_a.rs");
+    let file_b_path = repo.path().join("file_b.rs");
+    fs::write(&file_a_path, "// file a base\n").unwrap();
+    fs::write(&file_b_path, "// file b base\n").unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
-    // AI writes to file_a (properly checkpointed via set_contents)
-    file_a.set_contents_no_stage(crate::lines!["// file a base", "fn ai_code() {}".ai(),]);
+    // AI writes to file_a (properly checkpointed)
+    fs::write(&file_a_path, "// file a base\nfn ai_code() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "file_a.rs"])
+        .unwrap();
 
     // AI also writes to file_b, but we bypass the checkpoint system
     // (simulating a file that was written by AI but not checkpointed)
-    let file_b_path = repo.path().join("file_b.rs");
     fs::write(
         &file_b_path,
         "// file b base\nfn also_ai_but_no_checkpoint() {}\n",
@@ -565,6 +652,19 @@ fn test_h6_multi_file_commit_partial_checkpoint_coverage() {
          attestations: {:?}",
         commit.authorship_log.attestations
     );
+
+    // Verify per-file line-level blame
+    let mut fa = TestFile::from_existing_file(file_a_path, &repo);
+    fa.assert_lines_and_blame(crate::lines![
+        "// file a base".human(),
+        "fn ai_code() {}".ai(),
+    ]);
+
+    let mut fb = TestFile::from_existing_file(file_b_path, &repo);
+    fb.assert_lines_and_blame(crate::lines![
+        "// file b base".human(),
+        "fn also_ai_but_no_checkpoint() {}".human(),
+    ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -579,29 +679,29 @@ fn test_h5c_partial_stage_with_remaining_unstaged_changes() {
     let repo = TestRepo::new();
 
     // Base commit
-    let mut base = repo.filename("partial.rs");
+    let partial_path = repo.path().join("partial.rs");
     fs::write(
-        repo.path().join("partial.rs"),
+        &partial_path,
         "fn main() {}\n    // line 2\n    // line 3\n",
     )
     .unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
     // AI writes new lines
-    base.set_contents_no_stage(crate::lines![
-        "fn main() {}",
-        "    // line 2",
-        "    let x = 1;".ai(),
-        "    // line 3",
-        "    let y = 2;".ai(),
-    ]);
+    fs::write(
+        &partial_path,
+        "fn main() {}\n    // line 2\n    let x = 1;\n    // line 3\n    let y = 2;\n",
+    )
+    .unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "partial.rs"])
+        .unwrap();
 
     // Stage all changes
     repo.git(&["add", "partial.rs"]).unwrap();
 
     // Add MORE unstaged changes (file diverges from staged content)
     let post_stage_content = "fn main() {}\n    // line 2\n    let x = 1;\n    // line 3\n    let y = 2;\n    let z = 3; // unstaged\n";
-    fs::write(repo.path().join("partial.rs"), post_stage_content).unwrap();
+    fs::write(&partial_path, post_stage_content).unwrap();
 
     // Commit (only staged content goes in, but working dir has extra line)
     let commit = repo.commit("partial commit").unwrap();
@@ -613,6 +713,16 @@ fn test_h5c_partial_stage_with_remaining_unstaged_changes() {
          attestations: {:?}",
         commit.authorship_log.attestations
     );
+
+    // Verify committed lines have proper blame (unstaged line z=3 not included)
+    let mut file = TestFile::from_existing_file(partial_path, &repo);
+    file.assert_committed_lines(crate::lines![
+        "fn main() {}".human(),
+        "    // line 2".human(),
+        "    let x = 1;".ai(),
+        "    // line 3".human(),
+        "    let y = 2;".ai(),
+    ]);
 }
 
 // ===========================================================================
@@ -674,6 +784,13 @@ fn test_h6b_ai_checkpoint_with_empty_entries() {
             );
         }
     }
+
+    // All lines should blame as human since the empty-entries checkpoint is ignored
+    let mut file = TestFile::from_existing_file(repo.path().join("agent_code.rs"), &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "// base".human(),
+        "fn ai_function() {}".human(),
+    ]);
 }
 
 /// H6c: Three files edited by AI, but one file's checkpoint is missing
@@ -687,23 +804,25 @@ fn test_h6b_ai_checkpoint_with_empty_entries() {
 fn test_h6c_three_files_one_missing_checkpoint() {
     let repo = TestRepo::new();
 
-    let mut file_a = repo.filename("file_a.rs");
-    fs::write(repo.path().join("file_a.rs"), "// file a\n").unwrap();
-    fs::write(repo.path().join("file_b.rs"), "// file b\n").unwrap();
-    let mut file_c = repo.filename("file_c.rs");
-    fs::write(repo.path().join("file_c.rs"), "// file c\n").unwrap();
+    let fa_path = repo.path().join("file_a.rs");
+    let fb_path = repo.path().join("file_b.rs");
+    let fc_path = repo.path().join("file_c.rs");
+    fs::write(&fa_path, "// file a\n").unwrap();
+    fs::write(&fb_path, "// file b\n").unwrap();
+    fs::write(&fc_path, "// file c\n").unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
     // AI writes to all three files, but only A and C get AI checkpoints
-    file_a.set_contents_no_stage(crate::lines!["// file a", "fn a_ai() {}".ai()]);
-    file_c.set_contents_no_stage(crate::lines!["// file c", "fn c_ai() {}".ai()]);
+    fs::write(&fa_path, "// file a\nfn a_ai() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "file_a.rs"])
+        .unwrap();
+
+    fs::write(&fc_path, "// file c\nfn c_ai() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "file_c.rs"])
+        .unwrap();
 
     // file_b: AI-written content but only human checkpoint (hook failure)
-    fs::write(
-        repo.path().join("file_b.rs"),
-        "// file b\nfn b_ai_but_no_checkpoint() {}\n",
-    )
-    .unwrap();
+    fs::write(&fb_path, "// file b\nfn b_ai_but_no_checkpoint() {}\n").unwrap();
     repo.git_ai(&["checkpoint", "--", "file_b.rs"]).unwrap();
 
     let commit = repo.stage_all_and_commit("ai edits three files").unwrap();
@@ -738,6 +857,19 @@ fn test_h6c_three_files_one_missing_checkpoint() {
         c_attested,
         "H6c: file_c (AI checkpointed) should have attestation"
     );
+
+    // Verify per-file line-level blame
+    let mut fa = TestFile::from_existing_file(fa_path, &repo);
+    fa.assert_lines_and_blame(crate::lines!["// file a".human(), "fn a_ai() {}".ai(),]);
+
+    let mut fb = TestFile::from_existing_file(fb_path, &repo);
+    fb.assert_lines_and_blame(crate::lines![
+        "// file b".human(),
+        "fn b_ai_but_no_checkpoint() {}".human(),
+    ]);
+
+    let mut fc = TestFile::from_existing_file(fc_path, &repo);
+    fc.assert_lines_and_blame(crate::lines!["// file c".human(), "fn c_ai() {}".ai(),]);
 }
 
 /// H6d: AI checkpoint references a different file path than the actual edit.
@@ -805,6 +937,13 @@ fn test_h6d_ai_checkpoint_wrong_file_path() {
             );
         }
     }
+
+    // All lines in right.rs should blame as human since checkpoint targeted wrong.rs
+    let mut file = TestFile::from_existing_file(repo.path().join("right.rs"), &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "// base".human(),
+        "fn ai_wrote_this() {}".human(),
+    ]);
 }
 
 // ===========================================================================
@@ -896,6 +1035,13 @@ fn test_h7a_truncated_jsonl_poisons_all_checkpoints() {
             );
         }
     }
+
+    // All lines blame as human because the corrupt JSONL caused attribution loss
+    let mut file = TestFile::from_existing_file(repo.path().join("code.rs"), &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "// base".human(),
+        "fn valid_ai_code() {}".human(),
+    ]);
 }
 
 /// H7c: Checkpoint with wrong api_version is silently skipped.
@@ -954,6 +1100,10 @@ fn test_h7c_wrong_api_version_silently_skipped() {
             );
         }
     }
+
+    // All lines blame as human since checkpoint with wrong api_version was skipped
+    let mut file = TestFile::from_existing_file(repo.path().join("versioned.rs"), &repo);
+    file.assert_lines_and_blame(crate::lines!["// base".human(), "fn ai_code() {}".human(),]);
 }
 
 // ===========================================================================
@@ -1024,6 +1174,14 @@ fn test_h8a_ai_claims_existing_unchanged_lines() {
          attestations: {:?}",
         commit.authorship_log.attestations
     );
+
+    // Lines 1-2 are human (existed in parent), only line 3 is genuinely AI
+    let mut file = TestFile::from_existing_file(repo.path().join("existing.rs"), &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "fn existing_1() {}".human(),
+        "fn existing_2() {}".human(),
+        "fn new_ai_line() {}".ai(),
+    ]);
 }
 
 /// H8b: AI replaces an existing line (modification, not pure addition).
@@ -1036,16 +1194,14 @@ fn test_h8a_ai_claims_existing_unchanged_lines() {
 fn test_h8b_ai_replaces_existing_line() {
     let repo = TestRepo::new();
 
-    let mut file = repo.filename("replaced.rs");
-    fs::write(
-        repo.path().join("replaced.rs"),
-        "fn old_implementation() {}\n",
-    )
-    .unwrap();
+    let replaced_path = repo.path().join("replaced.rs");
+    fs::write(&replaced_path, "fn old_implementation() {}\n").unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
     // AI replaces the existing line with new implementation
-    file.set_contents_no_stage(crate::lines!["fn new_ai_implementation() {}".ai()]);
+    fs::write(&replaced_path, "fn new_ai_implementation() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "replaced.rs"])
+        .unwrap();
 
     let commit = repo.stage_all_and_commit("ai replaces function").unwrap();
 
@@ -1057,6 +1213,10 @@ fn test_h8b_ai_replaces_existing_line() {
          attestations: {:?}",
         commit.authorship_log.attestations
     );
+
+    // The replacement line should be AI-attributed
+    let mut file = TestFile::from_existing_file(replaced_path, &repo);
+    file.assert_lines_and_blame(crate::lines!["fn new_ai_implementation() {}".ai(),]);
 }
 
 // ===========================================================================
@@ -1074,21 +1234,25 @@ fn test_h8b_ai_replaces_existing_line() {
 fn test_h9a_human_rewrite_after_ai() {
     let repo = TestRepo::new();
 
-    let mut file = repo.filename("rewritten.rs");
-    fs::write(repo.path().join("rewritten.rs"), "// base\n").unwrap();
+    let rewritten_path = repo.path().join("rewritten.rs");
+    fs::write(&rewritten_path, "// base\n").unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
     // AI writes new lines
-    file.set_contents_no_stage(crate::lines![
-        "// base",
-        "fn ai_code_v1() {}".ai(),
-        "fn ai_code_v2() {}".ai(),
-    ]);
+    fs::write(
+        &rewritten_path,
+        "// base\nfn ai_code_v1() {}\nfn ai_code_v2() {}\n",
+    )
+    .unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "rewritten.rs"])
+        .unwrap();
 
     // Human completely rewrites the AI content before committing.
-    // Bypass set_contents to avoid creating another AI checkpoint.
-    let human_rewrite = "// base\nfn human_rewrite_v1() {}\nfn human_rewrite_v2() {}\n";
-    fs::write(repo.path().join("rewritten.rs"), human_rewrite).unwrap();
+    fs::write(
+        &rewritten_path,
+        "// base\nfn human_rewrite_v1() {}\nfn human_rewrite_v2() {}\n",
+    )
+    .unwrap();
     repo.git_ai(&["checkpoint", "--", "rewritten.rs"]).unwrap();
 
     let commit = repo.stage_all_and_commit("human rewrites ai code").unwrap();
@@ -1107,6 +1271,14 @@ fn test_h9a_human_rewrite_after_ai() {
          attestations: {:?}",
         commit.authorship_log.attestations
     );
+
+    // All lines should be human-attributed since human replaced all AI content
+    let mut file = TestFile::from_existing_file(rewritten_path, &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "// base".human(),
+        "fn human_rewrite_v1() {}".human(),
+        "fn human_rewrite_v2() {}".human(),
+    ]);
 }
 
 /// H9b: AI checkpoints a file, then the file is renamed before commit.
@@ -1122,12 +1294,14 @@ fn test_h9a_human_rewrite_after_ai() {
 fn test_h9b_file_renamed_after_ai_checkpoint() {
     let repo = TestRepo::new();
 
-    let mut file = repo.filename("old_name.rs");
-    fs::write(repo.path().join("old_name.rs"), "// base\n").unwrap();
+    let old_path = repo.path().join("old_name.rs");
+    fs::write(&old_path, "// base\n").unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
     // AI writes to old_name.rs (checkpoint keyed to "old_name.rs")
-    file.set_contents_no_stage(crate::lines!["// base", "fn ai_code() {}".ai()]);
+    fs::write(&old_path, "// base\nfn ai_code() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "old_name.rs"])
+        .unwrap();
 
     // User renames the file before committing
     repo.git(&["mv", "old_name.rs", "new_name.rs"]).unwrap();
@@ -1161,6 +1335,11 @@ fn test_h9b_file_renamed_after_ai_checkpoint() {
          attestations: {:?}",
         commit.authorship_log.attestations
     );
+
+    // The renamed file should blame all lines as human (attribution was lost)
+    let new_path = repo.path().join("new_name.rs");
+    let mut file = TestFile::from_existing_file(new_path, &repo);
+    file.assert_lines_and_blame(crate::lines!["// base".human(), "fn ai_code() {}".human(),]);
 }
 
 // ===========================================================================
@@ -1180,18 +1359,22 @@ fn test_h9b_file_renamed_after_ai_checkpoint() {
 fn test_h10_file_deleted_after_ai_checkpoint() {
     let repo = TestRepo::new();
 
-    let mut file_a = repo.filename("ephemeral.rs");
-    fs::write(repo.path().join("ephemeral.rs"), "// ephemeral\n").unwrap();
-    let mut file_b = repo.filename("survivor.rs");
-    fs::write(repo.path().join("survivor.rs"), "// survivor\n").unwrap();
+    let eph_path = repo.path().join("ephemeral.rs");
+    let surv_path = repo.path().join("survivor.rs");
+    fs::write(&eph_path, "// ephemeral\n").unwrap();
+    fs::write(&surv_path, "// survivor\n").unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
     // AI writes to both files
-    file_a.set_contents_no_stage(crate::lines!["// ephemeral", "fn ai_wrote_this() {}".ai(),]);
-    file_b.set_contents_no_stage(crate::lines!["// survivor", "fn also_ai() {}".ai()]);
+    fs::write(&eph_path, "// ephemeral\nfn ai_wrote_this() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "ephemeral.rs"])
+        .unwrap();
+    fs::write(&surv_path, "// survivor\nfn also_ai() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "survivor.rs"])
+        .unwrap();
 
     // User deletes ephemeral.rs before committing
-    fs::remove_file(repo.path().join("ephemeral.rs")).unwrap();
+    fs::remove_file(&eph_path).unwrap();
 
     let commit = repo
         .stage_all_and_commit("delete ephemeral, keep survivor")
@@ -1220,6 +1403,10 @@ fn test_h10_file_deleted_after_ai_checkpoint() {
          attestations: {:?}",
         commit.authorship_log.attestations
     );
+
+    // Verify surviving file has correct line-level blame
+    let mut file = TestFile::from_existing_file(surv_path, &repo);
+    file.assert_lines_and_blame(crate::lines!["// survivor".human(), "fn also_ai() {}".ai(),]);
 }
 
 // ===========================================================================
@@ -1303,6 +1490,27 @@ fn test_h11_two_agents_same_file_last_wins() {
          attestations: {:?}",
         attestations
     );
+
+    // Verify blame output directly — agent names are custom so they won't match
+    // the AI_AUTHOR_NAMES list used by assert_lines_and_blame. Instead verify
+    // that agent_a's line is attributed to "Test User" (human, attribution lost)
+    // and agent_b's line shows "agent_b" as author (last-writer-wins).
+    let blame_output = repo
+        .git_ai(&["blame", repo.path().join("shared.rs").to_str().unwrap()])
+        .expect("blame should succeed");
+    let blame_lines: Vec<&str> = blame_output
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    assert_eq!(blame_lines.len(), 3, "Expected 3 blame lines");
+    assert!(
+        blame_lines[1].contains("Test User"),
+        "H11 blame: agent_a's line should be attributed to Test User (human, attribution lost)"
+    );
+    assert!(
+        blame_lines[2].contains("agent_b"),
+        "H11 blame: agent_b's line should show agent_b as author (last-writer-wins)"
+    );
 }
 
 // ===========================================================================
@@ -1320,16 +1528,19 @@ fn test_h11_two_agents_same_file_last_wins() {
 fn test_h12_corrupt_initial_loses_uncommitted_carryover() {
     let repo = TestRepo::new();
 
-    let mut file_a = repo.filename("committed.rs");
-    let mut file_b = repo.filename("uncommitted.rs");
-    fs::write(repo.path().join("committed.rs"), "// base a\n").unwrap();
-    fs::write(repo.path().join("uncommitted.rs"), "// base b\n").unwrap();
+    let committed_path = repo.path().join("committed.rs");
+    let uncommitted_path = repo.path().join("uncommitted.rs");
+    fs::write(&committed_path, "// base a\n").unwrap();
+    fs::write(&uncommitted_path, "// base b\n").unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
-    // AI writes to both files using set_contents_no_stage to avoid
-    // auto-staging (set_contents uses git add -A which would stage both).
-    file_a.set_contents_no_stage(crate::lines!["// base a", "fn ai_a() {}".ai()]);
-    file_b.set_contents_no_stage(crate::lines!["// base b", "fn ai_b() {}".ai()]);
+    // AI writes to both files
+    fs::write(&committed_path, "// base a\nfn ai_a() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "committed.rs"])
+        .unwrap();
+    fs::write(&uncommitted_path, "// base b\nfn ai_b() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "uncommitted.rs"])
+        .unwrap();
 
     // Only stage file_a — file_b stays uncommitted
     repo.git(&["add", "committed.rs"]).unwrap();
@@ -1385,6 +1596,10 @@ fn test_h12_corrupt_initial_loses_uncommitted_carryover() {
          attestations: {:?}",
         commit2.authorship_log.attestations
     );
+
+    // file_b's AI attribution was lost due to corrupt INITIAL — all lines blame as human
+    let mut file = TestFile::from_existing_file(uncommitted_path, &repo);
+    file.assert_lines_and_blame(crate::lines!["// base b".human(), "fn ai_b() {}".human(),]);
 }
 
 // ===========================================================================
@@ -1449,6 +1664,16 @@ fn test_h13_missing_kind_defaults_to_human_but_preserves_ai_author() {
          attestations: {:?}",
         commit.authorship_log.attestations
     );
+
+    // Verify blame: both lines show as "Test User" because the missing kind
+    // field defaults to Human, and git-ai blame uses that for display even
+    // though the attestation system finds AI attribution via the author_id.
+    // The "legacy_agent" author_id isn't in AI_AUTHOR_NAMES, so we verify directly.
+    let mut file = TestFile::from_existing_file(repo.path().join("legacy.rs"), &repo);
+    file.assert_lines_and_blame(crate::lines![
+        "// base".human(),
+        "fn legacy_ai() {}".human(),
+    ]);
 }
 
 // ===========================================================================
@@ -1473,7 +1698,13 @@ fn test_h14_binary_file_ai_attribution_silently_dropped() {
     let binary_content = b"HEADER\x00\x01\x02BINARY DATA\nLINE 2\x00MORE\n";
     fs::write(repo.path().join("generated.bin"), binary_content).unwrap();
 
-    // Write raw AI checkpoint claiming attribution for this binary file
+    // Also write a text companion file with AI checkpoint (for blame verification)
+    let companion_path = repo.path().join("companion.rs");
+    fs::write(&companion_path, "fn companion() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "companion.rs"])
+        .unwrap();
+
+    // Write raw AI checkpoint claiming attribution for the binary file
     let git_dir = repo
         .git(&["rev-parse", "--absolute-git-dir"])
         .unwrap()
@@ -1489,7 +1720,14 @@ fn test_h14_binary_file_ai_attribution_silently_dropped() {
     let checkpoint = format!(
         r#"{{"kind":"AiAgent","diff":"fake","author":"Test User","entries":[{{"file":"generated.bin","blob_sha":"{content_sha}","attributions":[],"line_attributions":[{{"start_line":1,"end_line":2,"author_id":"binary_agent","overrode":null}}]}}],"timestamp":1000,"transcript":{{"messages":[]}},"agent_id":{{"tool":"mock_ai","id":"session","model":"test"}},"agent_metadata":null,"line_stats":{{"additions":2,"deletions":0,"additions_sloc":2,"deletions_sloc":0}},"api_version":"checkpoint/1.0.0","git_ai_version":"test"}}"#
     );
-    fs::write(cp_dir.join("checkpoints.jsonl"), &checkpoint).unwrap();
+    // Append the binary checkpoint to the existing checkpoints file (companion already wrote one)
+    let cp_file = cp_dir.join("checkpoints.jsonl");
+    if cp_file.exists() {
+        let existing = fs::read_to_string(&cp_file).unwrap();
+        fs::write(&cp_file, format!("{}\n{}", existing.trim(), checkpoint)).unwrap();
+    } else {
+        fs::write(&cp_file, &checkpoint).unwrap();
+    }
 
     let commit = repo.stage_all_and_commit("add binary file").unwrap();
 
@@ -1510,6 +1748,10 @@ fn test_h14_binary_file_ai_attribution_silently_dropped() {
          attestations: {:?}",
         commit.authorship_log.attestations
     );
+
+    // Verify the text companion file retains its AI blame correctly
+    let mut file = TestFile::from_existing_file(companion_path, &repo);
+    file.assert_lines_and_blame(crate::lines!["fn companion() {}".ai(),]);
 }
 
 // ===========================================================================
@@ -1533,8 +1775,10 @@ fn test_h17_merge_commit_note_for_feature_branch_ai_lines() {
 
     // Feature branch: AI writes code
     repo.git(&["checkout", "-b", "feature"]).unwrap();
-    let mut feature_file = repo.filename("feature.rs");
-    feature_file.set_contents_no_stage(crate::lines!["fn feature_ai() {}".ai()]);
+    let feature_path = repo.path().join("feature.rs");
+    fs::write(&feature_path, "fn feature_ai() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "feature.rs"])
+        .unwrap();
     let feature_commit = repo.stage_all_and_commit("feature: AI code").unwrap();
     assert!(
         !feature_commit.authorship_log.attestations.is_empty(),
@@ -1543,8 +1787,9 @@ fn test_h17_merge_commit_note_for_feature_branch_ai_lines() {
 
     // Switch back to main and make a divergent commit (forces merge commit)
     repo.git(&["checkout", &main_branch]).unwrap();
-    let mut main_file = repo.filename("main_only.rs");
-    main_file.set_contents_no_stage(crate::lines!["fn main_only() {}"]);
+    let main_only_path = repo.path().join("main_only.rs");
+    fs::write(&main_only_path, "fn main_only() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "--", "main_only.rs"]).unwrap();
     repo.stage_all_and_commit("main: diverge").unwrap();
 
     // Merge feature branch (non-squash, creates merge commit)
@@ -1569,9 +1814,6 @@ fn test_h17_merge_commit_note_for_feature_branch_ai_lines() {
                      attestations: {:?}",
                     has_feature_ai, log.attestations
                 );
-                // Document: merge commit may have AI attestation if daemon/wrapper
-                // processed the merge correctly through the rewrite system.
-                // If attestation is missing, blame still works (traces to original commit).
             }
         }
         None => {
@@ -1583,8 +1825,10 @@ fn test_h17_merge_commit_note_for_feature_branch_ai_lines() {
             );
         }
     }
-    // This test is observational — it documents behavior rather than asserting a bug.
-    // The merge_rebase.rs tests confirm blame works correctly regardless.
+
+    // Blame traces through merge to original feature commit — AI line retains attribution
+    let mut file = TestFile::from_existing_file(feature_path, &repo);
+    file.assert_lines_and_blame(crate::lines!["fn feature_ai() {}".ai(),]);
 }
 
 // ===========================================================================
@@ -1607,14 +1851,15 @@ fn test_h17_merge_commit_note_for_feature_branch_ai_lines() {
 fn test_h18_append_checkpoint_on_corrupt_jsonl_overwrites_valid_data() {
     let repo = TestRepo::new();
 
-    let mut file_a = repo.filename("early.rs");
-    let mut file_b = repo.filename("later.rs");
-    fs::write(repo.path().join("early.rs"), "// base a\n").unwrap();
-    fs::write(repo.path().join("later.rs"), "// base b\n").unwrap();
+    let early_path = repo.path().join("early.rs");
+    let later_path = repo.path().join("later.rs");
+    fs::write(&early_path, "// base a\n").unwrap();
+    fs::write(&later_path, "// base b\n").unwrap();
     repo.stage_all_and_commit("base").unwrap();
 
     // Step 1: AI writes to file_a — creates valid checkpoints in the JSONL
-    file_a.set_contents_no_stage(crate::lines!["// base a", "fn a_ai() {}".ai()]);
+    fs::write(&early_path, "// base a\nfn a_ai() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "early.rs"]).unwrap();
 
     // Step 2: Corrupt the JSONL (simulating crash/partial write)
     let base_sha = repo.git(&["rev-parse", "HEAD"]).unwrap().trim().to_string();
@@ -1639,7 +1884,8 @@ fn test_h18_append_checkpoint_on_corrupt_jsonl_overwrites_valid_data() {
     //   3. Pushes new file_b checkpoint onto empty vec
     //   4. Writes JSONL with ONLY file_b's checkpoints
     //   → file_a's valid checkpoints are silently destroyed
-    file_b.set_contents_no_stage(crate::lines!["// base b", "fn b_ai() {}".ai()]);
+    fs::write(&later_path, "// base b\nfn b_ai() {}\n").unwrap();
+    repo.git_ai(&["checkpoint", "mock_ai", "later.rs"]).unwrap();
 
     // Step 4: Commit both files.
     // The corrupt JSONL may cause post-commit to fail entirely (no note written),
@@ -1675,4 +1921,8 @@ fn test_h18_append_checkpoint_on_corrupt_jsonl_overwrites_valid_data() {
             );
         }
     }
+
+    // file_a's AI attribution was lost due to corrupt JSONL — all lines blame as human
+    let mut fa = TestFile::from_existing_file(early_path, &repo);
+    fa.assert_lines_and_blame(crate::lines!["// base a".human(), "fn a_ai() {}".human(),]);
 }
