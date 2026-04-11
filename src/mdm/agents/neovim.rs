@@ -7,9 +7,15 @@ use crate::mdm::utils::binary_exists;
 pub struct NeovimInstaller;
 
 impl HookInstaller for NeovimInstaller {
-    fn name(&self) -> &str { "Neovim" }
-    fn id(&self) -> &str { "neovim" }
-    fn uses_config_hooks(&self) -> bool { false }
+    fn name(&self) -> &str {
+        "Neovim"
+    }
+    fn id(&self) -> &str {
+        "neovim"
+    }
+    fn uses_config_hooks(&self) -> bool {
+        false
+    }
 
     fn check_hooks(&self, _params: &HookInstallerParams) -> Result<HookCheckResult, GitAiError> {
         let tool_installed = binary_exists("nvim");
@@ -58,7 +64,8 @@ impl HookInstaller for NeovimInstaller {
                 "  Native (~/.config/nvim/init.lua):\n",
                 "    vim.opt.rtp:prepend('/path/to/agent-support/neovim')\n",
                 "    require('git-ai').setup()",
-            ).to_string(),
+            )
+            .to_string(),
         }])
     }
 }
@@ -82,6 +89,11 @@ mod tests {
         let params = HookInstallerParams {
             binary_path: std::path::PathBuf::from("/usr/local/bin/git-ai"),
         };
-        assert!(NeovimInstaller.install_hooks(&params, false).unwrap().is_none());
+        assert!(
+            NeovimInstaller
+                .install_hooks(&params, false)
+                .unwrap()
+                .is_none()
+        );
     }
 }
