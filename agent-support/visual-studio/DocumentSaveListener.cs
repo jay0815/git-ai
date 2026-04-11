@@ -97,6 +97,8 @@ namespace GitAi.VisualStudio
 
         private void FireCheckpoint(string repoRoot)
         {
+            _timers.TryRemove(repoRoot, out var oldTimer);
+            oldTimer?.Dispose();
             if (!_pending.TryRemove(repoRoot, out var files) || files.IsEmpty) return;
 
             var pathsList = new List<string>(files.Keys);
@@ -157,9 +159,30 @@ namespace GitAi.VisualStudio
             return null;
         }
 
-        private static string EscapeJson(string s) =>
-            s.Replace("\\", "\\\\").Replace("\"", "\\\"")
-             .Replace("\n", "\\n").Replace("\r", "\\r").Replace("\t", "\\t");
+        private static string EscapeJson(string s)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (char c in s)
+            {
+                switch (c)
+                {
+                    case '\\': sb.Append("\\\\"); break;
+                    case '"': sb.Append("\\\""); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\t': sb.Append("\\t"); break;
+                    case '\b': sb.Append("\\b"); break;
+                    case '\f': sb.Append("\\f"); break;
+                    default:
+                        if (c < 0x20)
+                            sb.AppendFormat("\\u{0:X4}", (int)c);
+                        else
+                            sb.Append(c);
+                        break;
+                }
+            }
+            return sb.ToString();
+        }
 
         // Unused interface members — return S_OK
         public int OnAfterFirstDocumentLock(uint docCookie, uint dwRDTLockType, uint dwReadLocksRemaining, uint dwEditLocksRemaining) => VSConstants.S_OK;

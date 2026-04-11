@@ -18,10 +18,11 @@ impl HookInstaller for VisualStudioInstaller {
 
     fn check_hooks(&self, _params: &HookInstallerParams) -> Result<HookCheckResult, GitAiError> {
         let tool_installed = is_visual_studio_installed();
+        let hooks_installed = is_vsix_installed();
         Ok(HookCheckResult {
             tool_installed,
-            hooks_installed: false,
-            hooks_up_to_date: false,
+            hooks_installed,
+            hooks_up_to_date: hooks_installed,
         })
     }
 
@@ -69,6 +70,36 @@ fn is_visual_studio_installed() -> bool {
     }
 }
 
+fn is_vsix_installed() -> bool {
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let vs_dir = std::path::PathBuf::from(local_app_data)
+                .join("Microsoft")
+                .join("VisualStudio");
+            if let Ok(entries) = std::fs::read_dir(&vs_dir) {
+                for entry in entries.flatten() {
+                    let ext_dir = entry.path().join("Extensions");
+                    if let Ok(exts) = std::fs::read_dir(&ext_dir) {
+                        for ext in exts.flatten() {
+                            if ext.path().join("git-ai.vsix").exists()
+                                || ext.file_name().to_string_lossy().contains("git-ai")
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 fn install_vsix(
     params: &HookInstallerParams,
     dry_run: bool,
@@ -107,16 +138,14 @@ fn run_vsix_uninstall(params: &HookInstallerParams) -> UninstallResult {
 #[cfg(windows)]
 fn find_vs_installations() -> Option<std::path::PathBuf> {
     // Scan %ProgramFiles%\Microsoft Visual Studio\ for devenv.exe
-    let program_files = std::env::var("ProgramFiles")
-        .ok()
-        .or_else(|| std::env::var("ProgramFiles(x86)").ok())?;
+    let program_files = std::env::var("ProgramFiles").ok()?;
     let vs_root = std::path::PathBuf::from(program_files).join("Microsoft Visual Studio");
     if !vs_root.exists() {
         return None;
     }
 
     // Look for devenv.exe in year/edition subdirs
-    for year in &["2022", "2019", "2017"] {
+    for year in &["2022", "2019"] {
         for edition in &["Enterprise", "Professional", "Community", "BuildTools"] {
             let devenv = vs_root
                 .join(year)

@@ -27,8 +27,15 @@ namespace GitAi.VisualStudio
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
-                _saveListener?.Dispose();
+            if (disposing && _saveListener != null)
+            {
+                ThreadHelper.JoinableTaskFactory.Run(async () =>
+                {
+                    await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                    _saveListener.Dispose();
+                    _saveListener = null;
+                });
+            }
             base.Dispose(disposing);
         }
     }
