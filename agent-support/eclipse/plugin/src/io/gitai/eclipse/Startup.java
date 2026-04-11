@@ -10,5 +10,6 @@ public class Startup implements IStartup {
         GitAiSaveListener listener = new GitAiSaveListener();
         ResourcesPlugin.getWorkspace().addResourceChangeListener(
             listener, IResourceChangeEvent.POST_CHANGE);
+        Activator.getDefault().setListener(listener);
     }
 }

@@ -20,6 +20,12 @@ public class GitAiSaveListener implements IResourceChangeListener {
                 return t;
             });
 
+    private final ExecutorService ioExecutor = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "git-ai-checkpoint-io");
+        t.setDaemon(true);
+        return t;
+    });
+
     // per repo root -> debounce future
     private final ConcurrentHashMap<String, ScheduledFuture<?>> futures = new ConcurrentHashMap<>();
     // per repo root -> accumulated files {path -> content}
@@ -76,6 +82,7 @@ public class GitAiSaveListener implements IResourceChangeListener {
 
     private String findRepoRoot(IContainer container) {
         if (container == null) return null;
+        if (container instanceof IWorkspaceRoot) return null;
         if (container.findMember(".git") != null) {
             return container.getLocation().toOSString();
         }
@@ -83,11 +90,10 @@ public class GitAiSaveListener implements IResourceChangeListener {
     }
 
     private void scheduleCheckpoint(String repoRoot) {
-        ScheduledFuture<?> existing = futures.get(repoRoot);
-        if (existing != null) existing.cancel(false);
-        ScheduledFuture<?> future = scheduler.schedule(
-                () -> fireCheckpoint(repoRoot), DEBOUNCE_MS, TimeUnit.MILLISECONDS);
-        futures.put(repoRoot, future);
+        futures.compute(repoRoot, (key, existing) -> {
+            if (existing != null) existing.cancel(false);
+            return scheduler.schedule(() -> fireCheckpoint(repoRoot), DEBOUNCE_MS, TimeUnit.MILLISECONDS);
+        });
     }
 
     private void fireCheckpoint(String repoRoot) {
@@ -104,19 +110,27 @@ public class GitAiSaveListener implements IResourceChangeListener {
         payload.put("dirty_files", files);
 
         String json = toJson(payload);
-        try {
-            ProcessBuilder pb = new ProcessBuilder(
-                    GIT_AI_BIN, "checkpoint", "known_human", "--hook-input", "stdin");
-            pb.directory(new File(repoRoot));
-            pb.redirectErrorStream(true);
-            Process proc = pb.start();
-            try (OutputStream stdin = proc.getOutputStream()) {
-                stdin.write(json.getBytes(StandardCharsets.UTF_8));
+        ioExecutor.submit(() -> {
+            try {
+                ProcessBuilder pb = new ProcessBuilder(
+                        GIT_AI_BIN, "checkpoint", "known_human", "--hook-input", "stdin");
+                pb.directory(new File(repoRoot));
+                pb.redirectErrorStream(true);
+                Process proc = pb.start();
+                try (OutputStream stdin = proc.getOutputStream()) {
+                    stdin.write(json.getBytes(StandardCharsets.UTF_8));
+                }
+                proc.waitFor(10, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                // Best-effort; don't surface errors to the user
             }
-            proc.waitFor(10, TimeUnit.SECONDS);
-        } catch (Exception e) {
-            // Best-effort; don't surface errors to the user
-        }
+        });
+    }
+
+    public void shutdown() {
+        scheduler.shutdownNow();
+        ioExecutor.shutdownNow();
+        ResourcesPlugin.getWorkspace().removeResourceChangeListener(this);
     }
 
     // Simple JSON builder — no external deps needed
@@ -138,7 +152,8 @@ public class GitAiSaveListener implements IResourceChangeListener {
         if (v instanceof String) {
             sb.append("\"").append(((String) v)
                 .replace("\\", "\\\\").replace("\"", "\\\"")
-                .replace("\n", "\\n").replace("\r", "\\r")).append("\"");
+                .replace("\n", "\\n").replace("\r", "\\r")
+                .replace("\t", "\\t")).append("\"");
         } else if (v instanceof List) {
             sb.append("[");
             boolean f = true;
