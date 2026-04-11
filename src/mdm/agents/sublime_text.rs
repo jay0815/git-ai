@@ -30,24 +30,29 @@ impl SublimeTextInstaller {
         {
             // Try both Sublime Text 3 and 4 paths
             let paths = [
-                home_dir().join(".config").join("sublime-text").join("Packages"),
+                home_dir()
+                    .join(".config")
+                    .join("sublime-text")
+                    .join("Packages"),
                 home_dir()
                     .join(".config")
                     .join("sublime-text-3")
                     .join("Packages"),
             ];
-            paths
-                .into_iter()
-                .find(|p| p.exists())
-                .or_else(|| Some(home_dir().join(".config").join("sublime-text").join("Packages")))
+            paths.into_iter().find(|p| p.exists()).or_else(|| {
+                Some(
+                    home_dir()
+                        .join(".config")
+                        .join("sublime-text")
+                        .join("Packages"),
+                )
+            })
         }
         #[cfg(windows)]
         {
-            std::env::var("APPDATA").ok().map(|appdata| {
-                PathBuf::from(appdata)
-                    .join("Sublime Text")
-                    .join("Packages")
-            })
+            std::env::var("APPDATA")
+                .ok()
+                .map(|appdata| PathBuf::from(appdata).join("Sublime Text").join("Packages"))
         }
     }
 
@@ -144,7 +149,11 @@ impl HookInstaller for SublimeTextInstaller {
         }
 
         // Substitute the binary path placeholder
-        let path_str = params.binary_path.display().to_string().replace('\\', "\\\\");
+        let path_str = params
+            .binary_path
+            .display()
+            .to_string()
+            .replace('\\', "\\\\");
         let content = PLUGIN_TEMPLATE.replace("__GIT_AI_BINARY_PATH__", &path_str);
 
         if let Some(dir) = plugin_path.parent() {
