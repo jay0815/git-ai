@@ -6,9 +6,15 @@ use crate::mdm::hook_installer::{
 pub struct VisualStudioInstaller;
 
 impl HookInstaller for VisualStudioInstaller {
-    fn name(&self) -> &str { "Visual Studio" }
-    fn id(&self) -> &str { "visual-studio" }
-    fn uses_config_hooks(&self) -> bool { false }
+    fn name(&self) -> &str {
+        "Visual Studio"
+    }
+    fn id(&self) -> &str {
+        "visual-studio"
+    }
+    fn uses_config_hooks(&self) -> bool {
+        false
+    }
 
     fn check_hooks(&self, _params: &HookInstallerParams) -> Result<HookCheckResult, GitAiError> {
         let tool_installed = is_visual_studio_installed();
@@ -63,7 +69,10 @@ fn is_visual_studio_installed() -> bool {
     }
 }
 
-fn install_vsix(params: &HookInstallerParams, dry_run: bool) -> Result<Vec<InstallResult>, GitAiError> {
+fn install_vsix(
+    params: &HookInstallerParams,
+    dry_run: bool,
+) -> Result<Vec<InstallResult>, GitAiError> {
     #[cfg(windows)]
     {
         install_vsix_windows(params, dry_run)
@@ -98,16 +107,23 @@ fn run_vsix_uninstall(params: &HookInstallerParams) -> UninstallResult {
 #[cfg(windows)]
 fn find_vs_installations() -> Option<std::path::PathBuf> {
     // Scan %ProgramFiles%\Microsoft Visual Studio\ for devenv.exe
-    let program_files = std::env::var("ProgramFiles").ok()
+    let program_files = std::env::var("ProgramFiles")
+        .ok()
         .or_else(|| std::env::var("ProgramFiles(x86)").ok())?;
     let vs_root = std::path::PathBuf::from(program_files).join("Microsoft Visual Studio");
-    if !vs_root.exists() { return None; }
+    if !vs_root.exists() {
+        return None;
+    }
 
     // Look for devenv.exe in year/edition subdirs
     for year in &["2022", "2019", "2017"] {
         for edition in &["Enterprise", "Professional", "Community", "BuildTools"] {
-            let devenv = vs_root.join(year).join(edition)
-                .join("Common7").join("IDE").join("devenv.exe");
+            let devenv = vs_root
+                .join(year)
+                .join(edition)
+                .join("Common7")
+                .join("IDE")
+                .join("devenv.exe");
             if devenv.exists() {
                 return Some(vs_root.join(year).join(edition));
             }
@@ -118,25 +134,39 @@ fn find_vs_installations() -> Option<std::path::PathBuf> {
 
 #[cfg(windows)]
 fn find_vsix_installer(vs_root: &std::path::Path) -> Option<std::path::PathBuf> {
-    let vsix_installer = vs_root.join("Common7").join("IDE").join("VSIXInstaller.exe");
-    if vsix_installer.exists() { Some(vsix_installer) } else { None }
+    let vsix_installer = vs_root
+        .join("Common7")
+        .join("IDE")
+        .join("VSIXInstaller.exe");
+    if vsix_installer.exists() {
+        Some(vsix_installer)
+    } else {
+        None
+    }
 }
 
 #[cfg(windows)]
 fn vsix_path(params: &HookInstallerParams) -> Option<std::path::PathBuf> {
     // Look for VSIX next to the git-ai binary: <bin-dir>/lib/visual-studio/GitAiExtension.vsix
     let bin_dir = params.binary_path.parent()?;
-    let vsix = bin_dir.join("lib").join("visual-studio").join("GitAiExtension.vsix");
+    let vsix = bin_dir
+        .join("lib")
+        .join("visual-studio")
+        .join("GitAiExtension.vsix");
     if vsix.exists() { Some(vsix) } else { None }
 }
 
 #[cfg(windows)]
-fn install_vsix_windows(params: &HookInstallerParams, dry_run: bool) -> Result<Vec<InstallResult>, GitAiError> {
+fn install_vsix_windows(
+    params: &HookInstallerParams,
+    dry_run: bool,
+) -> Result<Vec<InstallResult>, GitAiError> {
     let Some(vs_root) = find_vs_installations() else {
         return Ok(vec![InstallResult {
             changed: false,
             diff: None,
-            message: "Visual Studio: Not detected. Install Visual Studio 2019 or 2022 first.".to_string(),
+            message: "Visual Studio: Not detected. Install Visual Studio 2019 or 2022 first."
+                .to_string(),
         }]);
     };
 
@@ -160,7 +190,10 @@ fn install_vsix_windows(params: &HookInstallerParams, dry_run: bool) -> Result<V
         return Ok(vec![InstallResult {
             changed: true,
             diff: None,
-            message: format!("Visual Studio: Pending VSIX install via {}", vsix_installer.display()),
+            message: format!(
+                "Visual Studio: Pending VSIX install via {}",
+                vsix_installer.display()
+            ),
         }]);
     }
 
@@ -172,14 +205,18 @@ fn install_vsix_windows(params: &HookInstallerParams, dry_run: bool) -> Result<V
         Ok(vec![InstallResult {
             changed: true,
             diff: None,
-            message: "Visual Studio: Extension installed. Restart Visual Studio to activate.".to_string(),
+            message: "Visual Studio: Extension installed. Restart Visual Studio to activate."
+                .to_string(),
         }])
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Ok(vec![InstallResult {
             changed: false,
             diff: None,
-            message: format!("Visual Studio: VSIX install failed: {}. Install manually from the Marketplace.", stderr.trim()),
+            message: format!(
+                "Visual Studio: VSIX install failed: {}. Install manually from the Marketplace.",
+                stderr.trim()
+            ),
         }])
     }
 }
@@ -187,12 +224,18 @@ fn install_vsix_windows(params: &HookInstallerParams, dry_run: bool) -> Result<V
 #[cfg(windows)]
 fn uninstall_vsix_windows(params: &HookInstallerParams) -> UninstallResult {
     let Some(vs_root) = find_vs_installations() else {
-        return UninstallResult { changed: false, diff: None,
-            message: "Visual Studio: Not detected".to_string() };
+        return UninstallResult {
+            changed: false,
+            diff: None,
+            message: "Visual Studio: Not detected".to_string(),
+        };
     };
     let Some(vsix_installer) = find_vsix_installer(&vs_root) else {
-        return UninstallResult { changed: false, diff: None,
-            message: "Visual Studio: VSIXInstaller.exe not found".to_string() };
+        return UninstallResult {
+            changed: false,
+            diff: None,
+            message: "Visual Studio: VSIXInstaller.exe not found".to_string(),
+        };
     };
     let _ = params;
     let output = std::process::Command::new(&vsix_installer)
@@ -200,10 +243,15 @@ fn uninstall_vsix_windows(params: &HookInstallerParams) -> UninstallResult {
         .output();
     match output {
         Ok(o) if o.status.success() => UninstallResult {
-            changed: true, diff: None,
-            message: "Visual Studio: Extension uninstalled".to_string() },
-        _ => UninstallResult { changed: false, diff: None,
-            message: "Visual Studio: Extension uninstall failed or was not installed".to_string() },
+            changed: true,
+            diff: None,
+            message: "Visual Studio: Extension uninstalled".to_string(),
+        },
+        _ => UninstallResult {
+            changed: false,
+            diff: None,
+            message: "Visual Studio: Extension uninstall failed or was not installed".to_string(),
+        },
     }
 }
 
@@ -226,7 +274,12 @@ mod tests {
         let params = HookInstallerParams {
             binary_path: std::path::PathBuf::from("/usr/local/bin/git-ai"),
         };
-        assert!(VisualStudioInstaller.install_hooks(&params, false).unwrap().is_none());
+        assert!(
+            VisualStudioInstaller
+                .install_hooks(&params, false)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[cfg(not(windows))]
@@ -235,7 +288,9 @@ mod tests {
         let params = HookInstallerParams {
             binary_path: std::path::PathBuf::from("/usr/local/bin/git-ai"),
         };
-        let results = VisualStudioInstaller.install_extras(&params, false).unwrap();
+        let results = VisualStudioInstaller
+            .install_extras(&params, false)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].message.contains("Windows"));
     }
