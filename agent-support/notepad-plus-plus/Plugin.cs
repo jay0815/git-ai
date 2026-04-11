@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -49,6 +48,14 @@ namespace GitAi.NotepadPlusPlus
             else if (notification.Header.Code == (uint)NppMsg.NPPN_FILESAVED)
             {
                 OnFileSaved();
+            }
+            else if (notification.Header.Code == (uint)NppMsg.NPPN_SHUTDOWN)
+            {
+                // Cancel all pending timers
+                foreach (var timer in _timers.Values)
+                    timer?.Dispose();
+                _timers.Clear();
+                _pending.Clear();
             }
         }
 
@@ -128,8 +135,8 @@ namespace GitAi.NotepadPlusPlus
                 {
                     UseShellExecute = false,
                     RedirectStandardInput = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = false,
                     CreateNoWindow = true,
                     WorkingDirectory = repoRoot,
                 };
@@ -169,8 +176,10 @@ namespace GitAi.NotepadPlusPlus
             _nppHandle = notepadPlusData._nppHandle;
         }
 
+        private static readonly IntPtr _namePtr = Marshal.StringToHGlobalUni(PluginName);
+
         [DllExport(CallingConvention = CallingConvention.Cdecl)]
-        public static IntPtr getName() => Marshal.StringToHGlobalUni(PluginName);
+        public static IntPtr getName() => _namePtr;
 
         [DllExport(CallingConvention = CallingConvention.Cdecl)]
         public static FuncItem[] getFuncsArray(ref int nbF)

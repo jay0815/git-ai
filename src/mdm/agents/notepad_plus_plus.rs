@@ -44,6 +44,17 @@ impl HookInstaller for NotepadPlusPlusInstaller {
         Ok(None)
     }
 
+    fn process_names(&self) -> Vec<&str> {
+        #[cfg(windows)]
+        {
+            vec!["notepad++"]
+        }
+        #[cfg(not(windows))]
+        {
+            vec![]
+        }
+    }
+
     fn install_extras(
         &self,
         params: &HookInstallerParams,
