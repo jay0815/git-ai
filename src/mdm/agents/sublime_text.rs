@@ -155,7 +155,8 @@ impl HookInstaller for SublimeTextInstaller {
             .binary_path
             .display()
             .to_string()
-            .replace('\\', "\\\\");
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
         let content = PLUGIN_TEMPLATE.replace("__GIT_AI_BINARY_PATH__", &path_str);
 
         if let Some(dir) = plugin_path.parent() {

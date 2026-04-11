@@ -13,6 +13,8 @@ Installation (automatic via `git-ai install-hooks`):
   Sublime Text hot-reloads Python packages — no restart needed.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import subprocess
@@ -44,6 +46,7 @@ def _find_repo_root(file_path: str) -> str | None:
 def _fire_checkpoint(repo_root: str) -> None:
     """Called after the debounce window; sends accumulated files to git-ai."""
     with _lock:
+        _timers.pop(repo_root, None)
         files: dict = _pending.pop(repo_root, {})
 
     if not files:
@@ -66,9 +69,9 @@ def _fire_checkpoint(repo_root: str) -> None:
             stderr=subprocess.PIPE,
             cwd=repo_root,
         )
-        proc.stdin.write(payload.encode("utf-8"))
-        proc.stdin.close()
-        proc.wait(timeout=15)
+        stdout, stderr = proc.communicate(input=payload.encode("utf-8"), timeout=15)
+        if proc.returncode != 0:
+            print(f"[git-ai] checkpoint exited with code {proc.returncode}: {stderr.decode('utf-8', errors='replace')[:200]}")
     except Exception as exc:
         print(f"[git-ai] checkpoint known_human error: {exc}")
 
@@ -108,3 +111,11 @@ class GitAiKnownHumanListener(sublime_plugin.EventListener):
             timer = threading.Timer(0.5, _fire_checkpoint, args=[repo_root])
             _timers[repo_root] = timer
             timer.start()
+
+
+def plugin_unloaded():
+    with _lock:
+        for t in _timers.values():
+            t.cancel()
+        _timers.clear()
+        _pending.clear()
