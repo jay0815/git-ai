@@ -1,0 +1,134 @@
+import Foundation
+import CoreServices
+
+// MARK: - Globals
+var watchedPaths: [String] = []
+var pendingFiles: [String: [String: String]] = [:]  // repoRoot -> [path: content]
+var debounceItems: [String: DispatchWorkItem] = []  // repoRoot -> work item
+let queue = DispatchQueue(label: "io.gitai.xcode-watcher", qos: .utility)
+let gitAiBin: String = {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    let dev = "\(home)/.git-ai/bin/git-ai"
+    if FileManager.default.fileExists(atPath: dev) { return dev }
+    return "git-ai"
+}()
+
+// MARK: - Utilities
+func findRepoRoot(for path: String) -> String? {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    proc.arguments = ["-C", path, "rev-parse", "--show-toplevel"]
+    let pipe = Pipe()
+    proc.standardOutput = pipe
+    proc.standardError = Pipe()
+    try? proc.run()
+    proc.waitUntilExit()
+    guard proc.terminationStatus == 0 else { return nil }
+    let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    return out?.isEmpty == false ? out : nil
+}
+
+func readFileContents(_ path: String) -> String? {
+    try? String(contentsOfFile: path, encoding: .utf8)
+}
+
+func shouldSkip(_ path: String) -> Bool {
+    let skip = ["/.git/", "/DerivedData/", "/xcuserdata/", "/.build/", ".DS_Store"]
+    return skip.contains { path.contains($0) }
+}
+
+func fireCheckpoint(repoRoot: String) {
+    queue.async {
+        guard let files = pendingFiles[repoRoot], !files.isEmpty else { return }
+        pendingFiles[repoRoot] = nil
+
+        let payload: [String: Any] = [
+            "editor": "xcode",
+            "editor_version": "unknown",
+            "extension_version": "1.0.0",
+            "cwd": repoRoot,
+            "edited_filepaths": Array(files.keys),
+            "dirty_files": files
+        ]
+
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload),
+              let jsonStr = String(data: jsonData, encoding: .utf8) else { return }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: gitAiBin)
+        proc.arguments = ["checkpoint", "known_human", "--hook-input", "stdin"]
+        proc.currentDirectoryURL = URL(fileURLWithPath: repoRoot)
+        let stdinPipe = Pipe()
+        proc.standardInput = stdinPipe
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try? proc.run()
+        stdinPipe.fileHandleForWriting.write(jsonStr.data(using: .utf8)!)
+        stdinPipe.fileHandleForWriting.closeFile()
+        proc.waitUntilExit()
+    }
+}
+
+func scheduleDebounce(repoRoot: String) {
+    debounceItems[repoRoot]?.cancel()
+    let item = DispatchWorkItem { fireCheckpoint(repoRoot: repoRoot) }
+    debounceItems[repoRoot] = item
+    queue.asyncAfter(deadline: .now() + 0.5, execute: item)
+}
+
+// MARK: - FSEvents callback
+let callback: FSEventStreamCallback = { (_, _, numEvents, eventPaths, _, _) in
+    let paths = Unmanaged<CFArray>.fromOpaque(eventPaths).takeUnretainedValue() as! [String]
+    var roots = Set<String>()
+    for path in paths {
+        guard !shouldSkip(path) else { continue }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir),
+              !isDir.boolValue else { continue }
+        let dir = (path as NSString).deletingLastPathComponent
+        guard let root = findRepoRoot(for: dir) else { continue }
+        guard let content = readFileContents(path) else { continue }
+        queue.sync {
+            if pendingFiles[root] == nil { pendingFiles[root] = [:] }
+            pendingFiles[root]![path] = content
+        }
+        roots.insert(root)
+    }
+    for root in roots { scheduleDebounce(repoRoot: root) }
+}
+
+// MARK: - Main
+var args = CommandLine.arguments.dropFirst()
+var paths: [String] = []
+var i = args.startIndex
+while i < args.endIndex {
+    if args[i] == "--path", args.index(after: i) < args.endIndex {
+        i = args.index(after: i)
+        paths.append(args[i])
+    }
+    i = args.index(after: i)
+}
+if paths.isEmpty { paths = [FileManager.default.currentDirectoryPath] }
+
+// Canonicalize paths
+let watchPaths = paths.map { ($0 as NSString).standardizingPath } as CFArray
+
+var context = FSEventStreamContext(version: 0, info: nil, retain: nil, release: nil, copyDescription: nil)
+guard let stream = FSEventStreamCreate(
+    kCFAllocatorDefault,
+    callback,
+    &context,
+    watchPaths,
+    FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+    0.1,
+    FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer)
+) else {
+    fputs("git-ai-xcode-watcher: failed to create FSEvents stream\n", stderr)
+    exit(1)
+}
+
+FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
+FSEventStreamStart(stream)
+print("git-ai-xcode-watcher: watching \(paths.joined(separator: ", "))")
+CFRunLoopRun()
