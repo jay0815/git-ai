@@ -85,17 +85,12 @@ impl ZedInstaller {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            home_dir()
-                .join(".config")
-                .join("zed")
-                .join("settings.json")
+            home_dir().join(".config").join("zed").join("settings.json")
         }
     }
 
     fn is_extension_installed() -> bool {
-        Self::extension_dir()
-            .join("extension.toml")
-            .exists()
+        Self::extension_dir().join("extension.toml").exists()
     }
 
     fn is_hook_script_installed(binary_path: &std::path::Path) -> bool {
@@ -311,16 +306,12 @@ impl HookInstaller for ZedInstaller {
     }
 
     fn check_hooks(&self, params: &HookInstallerParams) -> Result<HookCheckResult, GitAiError> {
-        let tool_installed = binary_exists("zed")
-            || home_dir().join(".config").join("zed").exists()
-            || {
+        let tool_installed =
+            binary_exists("zed") || home_dir().join(".config").join("zed").exists() || {
                 #[cfg(target_os = "macos")]
                 {
                     std::path::Path::new("/Applications/Zed.app").exists()
-                        || home_dir()
-                            .join("Applications")
-                            .join("Zed.app")
-                            .exists()
+                        || home_dir().join("Applications").join("Zed.app").exists()
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
@@ -330,8 +321,7 @@ impl HookInstaller for ZedInstaller {
 
         let script_installed = Self::is_hook_script_installed(&params.binary_path);
         let extension_installed = Self::is_extension_installed();
-        let settings_configured =
-            Self::is_settings_configured(&Self::hook_script_path());
+        let settings_configured = Self::is_settings_configured(&Self::hook_script_path());
 
         let hooks_installed = script_installed && extension_installed && settings_configured;
 
@@ -405,10 +395,7 @@ impl HookInstaller for ZedInstaller {
             results.push(InstallResult {
                 changed: true,
                 diff: Some(diff),
-                message: format!(
-                    "Zed: hook script installed to {}",
-                    script_path.display()
-                ),
+                message: format!("Zed: hook script installed to {}", script_path.display()),
             });
         }
 
@@ -424,10 +411,7 @@ impl HookInstaller for ZedInstaller {
             results.push(InstallResult {
                 changed: true,
                 diff: None,
-                message: format!(
-                    "Zed: pending extension install to {}",
-                    ext_dir.display()
-                ),
+                message: format!("Zed: pending extension install to {}", ext_dir.display()),
             });
         } else {
             fs::create_dir_all(&ext_dir)?;
@@ -493,10 +477,7 @@ impl HookInstaller for ZedInstaller {
             results.push(UninstallResult {
                 changed: true,
                 diff: Some(diff),
-                message: format!(
-                    "Zed: hook script removed from {}",
-                    script_path.display()
-                ),
+                message: format!("Zed: hook script removed from {}", script_path.display()),
             });
         } else {
             results.push(UninstallResult {
