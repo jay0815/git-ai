@@ -1665,6 +1665,38 @@ impl TestRepo {
         )
     }
 
+    /// Capture the current daemon completion count before running a `git ai checkpoint`
+    /// command so that `sync_queued_checkpoint_if_needed` can wait for it afterward.
+    fn checkpoint_completion_baseline_for_cmd(&self, args: &[&str]) -> u64 {
+        if self.git_mode.uses_daemon() && git_ai_primary_command(args) == Some("checkpoint") {
+            self.daemon_total_completion_count()
+        } else {
+            0
+        }
+    }
+
+    /// After a successful `git ai checkpoint` in daemon mode, wait for the daemon to
+    /// process it if it was handed off asynchronously.
+    ///
+    /// Captured-async checkpoints delegate to the daemon with `wait=false` and print
+    /// "Checkpoint queued" to stderr.  For those we must wait for the completion log to
+    /// advance before tests can safely read the working log.
+    ///
+    /// Live checkpoints (`wait=true`) print "Checkpoint completed" and their completion
+    /// log entry is already written when the subprocess returns, so no waiting is needed.
+    fn sync_queued_checkpoint_if_needed(&self, args: &[&str], output: &str, baseline: u64) {
+        if !self.git_mode.uses_daemon() {
+            return;
+        }
+        if git_ai_primary_command(args) != Some("checkpoint") {
+            return;
+        }
+        if !output.contains("Checkpoint queued") {
+            return;
+        }
+        self.wait_for_daemon_total_completion_count(baseline, baseline.saturating_add(1));
+    }
+
     fn daemon_family_key_for_repo_path(&self, repo_path: &Path) -> String {
         let repo = GitAiRepository::find_repository_in_path(repo_path.to_str().unwrap())
             .unwrap_or_else(|e| {
@@ -2366,6 +2398,8 @@ impl TestRepo {
             self.sync_daemon_force();
         }
 
+        let checkpoint_baseline = self.checkpoint_completion_baseline_for_cmd(args);
+
         let binary_path = get_binary_path();
         let normalized_args = normalize_test_git_ai_checkpoint_args(args);
 
@@ -2405,6 +2439,7 @@ impl TestRepo {
             } else {
                 format!("{}{}", stdout, stderr)
             };
+            self.sync_queued_checkpoint_if_needed(args, &combined, checkpoint_baseline);
             Ok(combined)
         } else {
             // Combine stdout and stderr so callers can find structured
@@ -2429,6 +2464,8 @@ impl TestRepo {
         if git_ai_command_requires_daemon_sync(args) {
             self.sync_daemon_force();
         }
+
+        let checkpoint_baseline = self.checkpoint_completion_baseline_for_cmd(args);
 
         let binary_path = get_binary_path();
         let normalized_args = normalize_test_git_ai_checkpoint_args(args);
@@ -2476,6 +2513,7 @@ impl TestRepo {
             } else {
                 format!("{}{}", stdout, stderr)
             };
+            self.sync_queued_checkpoint_if_needed(args, &combined, checkpoint_baseline);
             Ok(combined)
         } else {
             let combined = if stdout.is_empty() {

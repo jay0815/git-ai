@@ -661,11 +661,11 @@ fn read_worktree_snapshot_for_files_at_or_before(
     let mut snapshot = HashMap::new();
     for file_path in file_paths {
         let absolute = worktree.join(file_path);
-        let modified_after_cutoff = fs::metadata(&absolute)
+        let mtime_ns = fs::metadata(&absolute)
             .ok()
             .and_then(|metadata| metadata.modified().ok())
-            .and_then(system_time_to_unix_nanos)
-            .is_some_and(|modified_ns| modified_ns > max_modified_ns);
+            .and_then(system_time_to_unix_nanos);
+        let modified_after_cutoff = mtime_ns.is_some_and(|modified_ns| modified_ns > max_modified_ns);
         if modified_after_cutoff {
             continue;
         }
@@ -3643,10 +3643,19 @@ struct ActorDaemonCoordinator {
         Mutex<HashMap<String, VecDeque<RecentReplayPrerequisite>>>,
     side_effect_errors_by_family: Mutex<HashMap<String, BTreeMap<u64, String>>>,
     side_effect_exec_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    /// Per-family `Notify` used to wake up the drain worker task for that family.
+    /// When a command or checkpoint is ready to drain, callers call `notify_one()`
+    /// on the family's notifier instead of calling drain inline.  The drain worker
+    /// (spawned lazily on first use) loops: `notified().await → exec_lock → drain`.
+    /// This decouples the serial trace-ingest worker from slow drain I/O, so payloads
+    /// for other families are never delayed by one family's side-effect processing.
+    drain_notifiers: Mutex<HashMap<String, Arc<Notify>>>,
+    /// Weak self-reference set in `start_trace_ingest_worker`.  Used by
+    /// `get_or_create_drain_notifier` to hand an `Arc<Self>` to per-family drain tasks.
+    self_weak: std::sync::OnceLock<std::sync::Weak<ActorDaemonCoordinator>>,
     carryover_snapshots_by_id: Mutex<HashMap<String, HashMap<String, String>>>,
     carryover_snapshot_ids_by_root: Mutex<HashMap<String, Vec<String>>>,
     test_completion_log_dir: Option<PathBuf>,
-    test_completion_log_lock: Mutex<()>,
     trace_ingest_tx: Mutex<Option<mpsc::Sender<Value>>>,
     telemetry_worker: Option<crate::daemon::telemetry_worker::DaemonTelemetryWorkerHandle>,
     next_trace_ingest_seq: AtomicUsize,
@@ -3695,6 +3704,8 @@ impl ActorDaemonCoordinator {
             recent_replay_prerequisites_by_family: Mutex::new(HashMap::new()),
             side_effect_errors_by_family: Mutex::new(HashMap::new()),
             side_effect_exec_locks: Mutex::new(HashMap::new()),
+            drain_notifiers: Mutex::new(HashMap::new()),
+            self_weak: std::sync::OnceLock::new(),
             carryover_snapshots_by_id: Mutex::new(HashMap::new()),
             carryover_snapshot_ids_by_root: Mutex::new(HashMap::new()),
             test_completion_log_dir: std::env::var("GIT_AI_TEST_DB_PATH")
@@ -3707,7 +3718,6 @@ impl ActorDaemonCoordinator {
                             std::env::temp_dir().join("git-ai-daemon-test-completions-fallback")
                         })
                 }),
-            test_completion_log_lock: Mutex::new(()),
             trace_ingest_tx: Mutex::new(None),
             telemetry_worker: None,
             next_trace_ingest_seq: AtomicUsize::new(0),
@@ -3734,6 +3744,13 @@ impl ActorDaemonCoordinator {
         self.shutting_down.store(true, Ordering::SeqCst);
         if let Ok(mut tx) = self.trace_ingest_tx.lock() {
             let _ = tx.take();
+        }
+        // Wake all per-family drain workers so they can observe `is_shutting_down()`
+        // and exit cleanly.
+        if let Ok(map) = self.drain_notifiers.lock() {
+            for notifier in map.values() {
+                notifier.notify_waiters();
+            }
         }
         self.shutdown_notify.notify_waiters();
         // Hold the condvar mutex so notify_all cannot race with the
@@ -3799,6 +3816,13 @@ impl ActorDaemonCoordinator {
         }
         if let Ok(mut map) = self.side_effect_exec_locks.lock() {
             map.retain(|_, lock| Arc::strong_count(lock) <= 1);
+        }
+        // Remove drain notifiers for families whose drain worker has exited.
+        // While the drain worker is alive it holds a clone of the Arc<Notify>,
+        // so strong_count > 1.  After the worker exits (e.g. after shutdown) the
+        // only remaining holder is this map, so strong_count == 1.
+        if let Ok(mut map) = self.drain_notifiers.lock() {
+            map.retain(|_, notifier| Arc::strong_count(notifier) > 1);
         }
         if let Ok(mut map) = self.carryover_snapshots_by_id.lock() {
             map.retain(|_, snapshot| !snapshot.is_empty());
@@ -3950,11 +3974,41 @@ impl ActorDaemonCoordinator {
         replacement: FamilySequencerEntry,
     ) -> Result<Option<String>, GitAiError> {
         let Some(slot) = self.take_pending_root_slot(root_sid)? else {
+            // No PendingRoot was registered (e.g. the `start` event had no worktree hint
+            // because the caller used current_dir instead of -C).  If the normalised
+            // command already resolved a family_key we can still queue it via a late
+            // registration so that deferred snapshot capture and correct drain ordering
+            // still apply.
+            if let FamilySequencerEntry::ReadyCommand(ref cmd) = replacement
+                && let Some(family_key) = cmd.family_key.as_ref()
+            {
+                let family = family_key.0.clone();
+                let started_at_ns = cmd.started_at_ns;
+                {
+                    let mut sequencers = self.family_sequencers_by_family.lock().map_err(|_| {
+                        GitAiError::Generic("family sequencer map lock poisoned".to_string())
+                    })?;
+                    let state = sequencers.entry(family.clone()).or_insert_with(|| FamilySequencerState {
+                        next_ordinal: 1,
+                        entries: BTreeMap::new(),
+                    });
+                    let order = FamilySequencerOrder {
+                        started_at_ns,
+                        ordinal: state.next_ordinal,
+                    };
+                    state.next_ordinal = state.next_ordinal.saturating_add(1);
+                    state.entries.insert(order, replacement);
+                }
+                self.get_or_create_drain_notifier(&family)?.notify_one();
+                return Ok(Some(family));
+            }
             return Ok(None);
         };
         let family = slot.family.clone();
-        let exec_lock = self.side_effect_exec_lock(&family)?;
-        let _guard = exec_lock.lock().await;
+        // Update the sequencer entry under the sequencer mutex, then wake the
+        // per-family drain worker.  No exec_lock is needed here — the sequencer
+        // mutex is sufficient for the in-place update, and the drain worker's own
+        // exec_lock acquisition serialises all drain operations for this family.
         {
             let mut sequencers = self.family_sequencers_by_family.lock().map_err(|_| {
                 GitAiError::Generic("family sequencer map lock poisoned".to_string())
@@ -3983,8 +4037,7 @@ impl ActorDaemonCoordinator {
                 }
             }
         }
-        self.drain_ready_family_sequencer_entries_locked(&family)
-            .await?;
+        self.get_or_create_drain_notifier(&family)?.notify_one();
         Ok(Some(family))
     }
 
@@ -4094,20 +4147,24 @@ impl ActorDaemonCoordinator {
         let Some(dir) = self.test_completion_log_dir.as_ref() else {
             return Ok(());
         };
-        let _guard = self
-            .test_completion_log_lock
-            .lock()
-            .map_err(|_| GitAiError::Generic("test completion log lock poisoned".to_string()))?;
-
+        // Each family writes to a unique file (SHA-256 keyed), so there is no
+        // cross-family contention.  Within a family, drain-path callers hold
+        // `side_effect_exec_lock`, but the Applied path (ingest_trace_payload_fast)
+        // does not.  Concurrent same-family writes are safe because we combine the
+        // JSON payload and newline into a single write: O_APPEND guarantees that a
+        // write ≤ PIPE_BUF (~4 KiB) is atomic on Linux, and our entries are
+        // ~200–400 bytes.  The test reader scans for specific session IDs and does
+        // not rely on ordering, so atomically-appended entries at any relative order
+        // are always correctly found.
         fs::create_dir_all(dir)?;
         let mut hasher = Sha256::new();
         hasher.update(family.as_bytes());
         let digest = format!("{:x}", hasher.finalize());
         let path = dir.join(format!("{}.jsonl", &digest[..16]));
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        let line = serde_json::to_string(entry).map_err(GitAiError::from)?;
+        let mut line = serde_json::to_string(entry).map_err(GitAiError::from)?;
+        line.push('\n');
         file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")?;
         file.flush()?;
         Ok(())
     }
@@ -4435,7 +4492,10 @@ impl ActorDaemonCoordinator {
                         input.root_sid
                     ))
                 })?;
-                file_paths.extend(tracked_working_log_files(&repo, &old_head)?);
+                let has_log = repo.storage.has_working_log(&old_head);
+                let wl_files = tracked_working_log_files(&repo, &old_head)?;
+                let _ = has_log;
+                file_paths.extend(wl_files);
             }
             "rebase" | "pull" => {
                 if let Some((old_head, new_head)) = stable_heads.clone() {
@@ -4516,6 +4576,11 @@ impl ActorDaemonCoordinator {
     }
 
     fn start_trace_ingest_worker(self: &Arc<Self>) -> Result<(), GitAiError> {
+        // Store the weak self-reference now that we have an Arc<Self>.
+        // This is used by `get_or_create_drain_notifier` to hand a strong
+        // reference to spawned per-family drain worker tasks.
+        let _ = self.self_weak.set(Arc::downgrade(self));
+
         let mut guard = self
             .trace_ingest_tx
             .lock()
@@ -5338,15 +5403,80 @@ impl ActorDaemonCoordinator {
             .clone())
     }
 
+    /// Returns the per-family `Notify` used to wake the drain worker, spawning the
+    /// drain worker on first call for the given family.
+    ///
+    /// The drain worker loop: `notified().await → exec_lock → drain_all_ready_entries`.
+    /// This keeps the serial trace-ingest worker free of slow drain I/O; any family's
+    /// side-effect pipeline can run without blocking payloads for other families.
+    fn get_or_create_drain_notifier(
+        &self,
+        family: &str,
+    ) -> Result<Arc<Notify>, GitAiError> {
+        let mut map = self
+            .drain_notifiers
+            .lock()
+            .map_err(|_| GitAiError::Generic("drain notifiers lock poisoned".to_string()))?;
+        if let Some(existing) = map.get(family) {
+            return Ok(existing.clone());
+        }
+        let notifier = Arc::new(Notify::new());
+        map.insert(family.to_string(), notifier.clone());
+
+        // Upgrade the stored weak reference to Arc<Self> for the drain task.
+        let coordinator = self
+            .self_weak
+            .get()
+            .and_then(|w| w.upgrade())
+            .ok_or_else(|| {
+                GitAiError::Generic(
+                    "drain worker cannot be spawned: coordinator not yet initialized".to_string(),
+                )
+            })?;
+        let family_clone = family.to_string();
+        let notifier_clone = notifier.clone();
+        tokio::spawn(async move {
+            loop {
+                notifier_clone.notified().await;
+                if coordinator.is_shutting_down() {
+                    break;
+                }
+                let exec_lock = match coordinator.side_effect_exec_lock(&family_clone) {
+                    Ok(lock) => lock,
+                    Err(_) => break,
+                };
+                let _guard = exec_lock.lock().await;
+                if coordinator.is_shutting_down() {
+                    break;
+                }
+                if let Err(e) = coordinator
+                    .drain_ready_family_sequencer_entries_locked(&family_clone)
+                    .await
+                {
+                    debug_log(&format!(
+                        "drain worker error for family {}: {}",
+                        family_clone, e
+                    ));
+                }
+            }
+        });
+
+        Ok(notifier)
+    }
+
     async fn append_checkpoint_to_family_sequencer(
         &self,
         family: &str,
         request: CheckpointRunRequest,
         respond_to: Option<oneshot::Sender<Result<u64, GitAiError>>>,
     ) -> Result<(), GitAiError> {
-        let exec_lock = self.side_effect_exec_lock(family)?;
-        let _guard = exec_lock.lock().await;
-
+        // Add the checkpoint entry to the sequencer, then wake the per-family drain
+        // worker.  No exec_lock is needed here — the sequencer is protected by its
+        // own mutex, and drain serialisation is enforced by the drain worker's own
+        // exec_lock acquisition.  For wait=true checkpoints the caller holds the
+        // receiving end of `respond_to` and will block until the drain worker sends
+        // the result, achieving the same observable behaviour as the previous
+        // synchronous drain-inline approach.
         {
             let mut sequencers = self.family_sequencers_by_family.lock().map_err(|_| {
                 GitAiError::Generic("family sequencer map lock poisoned".to_string())
@@ -5372,8 +5502,8 @@ impl ActorDaemonCoordinator {
             );
         }
 
-        self.drain_ready_family_sequencer_entries_locked(family)
-            .await
+        self.get_or_create_drain_notifier(family)?.notify_one();
+        Ok(())
     }
 
     async fn drain_ready_family_sequencer_entries_locked(
@@ -5419,7 +5549,44 @@ impl ActorDaemonCoordinator {
         let _ = self.begin_family_effect(family);
         for (order, ready_entry) in ready {
             match ready_entry {
-                FamilySequencerEntry::ReadyCommand(command) => {
+                FamilySequencerEntry::ReadyCommand(mut command) => {
+                    // Deferred carryover snapshot capture: the ingest worker runs
+                    // `capture_carryover_snapshot_for_command` eagerly, but with
+                    // async drain it may execute BEFORE a prior command's drain has
+                    // updated the working log (e.g. an `amend` that moves the
+                    // working-log entry from the original SHA to the amended SHA).
+                    // At this point every prior command in this family has already
+                    // been drained, so the working log is fully up-to-date.  If the
+                    // eager capture found nothing, retry here.
+                    let was_snapshot_none = command.carryover_snapshot_id.is_none();
+                    if command.carryover_snapshot_id.is_none() {
+                        if let Some(worktree) = command.worktree.as_deref() {
+                            match self.capture_carryover_snapshot_for_command(
+                                CarryoverCaptureInput {
+                                    root_sid: &command.root_sid,
+                                    worktree,
+                                    primary_command: command.primary_command.as_deref(),
+                                    argv: &command.raw_argv,
+                                    exit_code: command.exit_code,
+                                    finished_at_ns: command.finished_at_ns,
+                                    post_repo: command.post_repo.as_ref(),
+                                    ref_changes: &command.ref_changes,
+                                },
+                            ) {
+                                Ok(Some(snapshot_id)) => {
+                                    command.carryover_snapshot_id = Some(snapshot_id);
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    debug_log(&format!(
+                                        "deferred carryover snapshot capture failed for sid={}: {}",
+                                        command.root_sid, e
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    let _ = was_snapshot_none;
                     // Wrap the entire command + side-effect pipeline in catch_unwind
                     // so that a panic (e.g. from UTF-8 boundary issues in diff parsing)
                     // does not kill the daemon process.

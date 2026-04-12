@@ -1209,14 +1209,30 @@ fn merge_reflog_cut(
 }
 
 fn payload_timestamp_ns(payload: &Value) -> Result<u128, GitAiError> {
+    // Integer fields: ts, time_ns (absolute nanoseconds since epoch)
     if let Some(time) = payload
         .get("ts")
-        .or_else(|| payload.get("time"))
         .or_else(|| payload.get("time_ns"))
         .and_then(Value::as_u64)
     {
         return Ok(time as u128);
     }
+    // git trace2 sends "time" as an RFC3339 string (e.g. "2024-01-01T12:00:00.123456Z").
+    // Try to parse it as an absolute timestamp first, then fall back to treating it as u64.
+    if let Some(ns) = payload
+        .get("time")
+        .and_then(Value::as_str)
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .and_then(|dt| u128::try_from(dt.timestamp_nanos_opt()?).ok())
+    {
+        return Ok(ns);
+    }
+    if let Some(time) = payload.get("time").and_then(Value::as_u64) {
+        return Ok(time as u128);
+    }
+    // t_abs is elapsed seconds since program start — not an absolute timestamp.
+    // Only use it as a last resort; callers that need absolute wall-clock times
+    // (e.g. snapshot mtime cutoffs) must fall back to now() in that case.
     if let Some(seconds) = payload.get("t_abs").and_then(Value::as_f64) {
         return Ok((seconds * 1_000_000_000_f64) as u128);
     }
