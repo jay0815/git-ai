@@ -3766,6 +3766,7 @@ fn daemon_pure_trace_socket_high_throughput_ai_commit_burst_preserves_exact_blam
     let env_refs = [(env[0].0, env[0].1.as_str()), (env[1].0, env[1].1.as_str())];
 
     let file_count = 16usize;
+    let checkpoint_baseline = repo.daemon_checkpoint_completion_count();
     for idx in 0..file_count {
         let file_rel = format!("daemon-race-file-{idx}.txt");
         let file_path = repo.path().join(file_rel.as_str());
@@ -3782,6 +3783,12 @@ fn daemon_pure_trace_socket_high_throughput_ai_commit_burst_preserves_exact_blam
             .expect("staging ai burst file should succeed");
     }
 
+    // Wait for all checkpoint drains before committing to prevent the race
+    // where the drain processes a checkpoint after the file is committed/clean.
+    repo.wait_for_daemon_checkpoint_completion_count(
+        checkpoint_baseline,
+        checkpoint_baseline + file_count as u64,
+    );
     repo.git_og_with_env(&["commit", "-m", "ai burst commit"], &env_refs)
         .expect("ai burst commit should succeed");
 
@@ -3829,6 +3836,7 @@ fn daemon_pure_trace_socket_concurrent_worktree_burst_preserves_exact_line_attri
 
     let file_count = 10usize;
     let completion_baseline = repo.daemon_total_completion_count();
+    let checkpoint_baseline = harness.checkpoint_completion_count();
     for idx in 0..file_count {
         let file_a = format!("daemon-race-a-{idx}.txt");
         harness.write_ai_line_checkpoint_and_add(
@@ -3845,6 +3853,11 @@ fn daemon_pure_trace_socket_concurrent_worktree_burst_preserves_exact_line_attri
         );
     }
 
+    // Wait for all checkpoint drains from both workers before either commits.
+    harness.wait_for_checkpoint_completion_count(
+        checkpoint_baseline,
+        checkpoint_baseline + (file_count as u64) * 2,
+    );
     harness.run_traced_git(&worker_a_dir, &["commit", "-m", "worker-a burst commit"]);
     harness.run_traced_git(&worker_b_dir, &["commit", "-m", "worker-b burst commit"]);
 
