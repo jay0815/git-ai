@@ -45,24 +45,7 @@ pub fn handle_git_ai(args: &[String]) {
     // (help, version, config, d management, debug, upgrade) so users can
     // always diagnose and recover from a broken state.
     if config::Config::get().feature_flags().async_mode {
-        let needs_daemon = !matches!(
-            args[0].as_str(),
-            "help"
-                | "--help"
-                | "-h"
-                | "version"
-                | "--version"
-                | "-v"
-                | "config"
-                | "bg"
-                | "d"
-                | "daemon"
-                | "debug"
-                | "upgrade"
-                | "install-hooks"
-                | "install"
-                | "uninstall-hooks"
-        );
+        let needs_daemon = git_ai_command_requires_daemon_startup(args[0].as_str());
         if needs_daemon {
             use crate::daemon::telemetry_handle::{
                 DaemonTelemetryInitResult, init_daemon_telemetry_handle,
@@ -249,6 +232,45 @@ pub fn handle_git_ai(args: &[String]) {
             println!("Unknown git-ai command: {}", args[0]);
             std::process::exit(1);
         }
+    }
+}
+
+fn git_ai_command_requires_daemon_startup(command: &str) -> bool {
+    !matches!(
+        command,
+        "help"
+            | "--help"
+            | "-h"
+            | "version"
+            | "--version"
+            | "-v"
+            | "config"
+            | "bg"
+            | "d"
+            | "daemon"
+            | "debug"
+            | "upgrade"
+            | "install-hooks"
+            | "install"
+            | "uninstall-hooks"
+            // `checkpoint` already has its own daemon-or-local fallback path.
+            | "checkpoint"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::git_ai_command_requires_daemon_startup;
+
+    #[test]
+    fn checkpoint_can_run_without_eager_daemon_startup() {
+        assert!(!git_ai_command_requires_daemon_startup("checkpoint"));
+    }
+
+    #[test]
+    fn stateful_commands_still_require_daemon_startup() {
+        assert!(git_ai_command_requires_daemon_startup("search"));
+        assert!(git_ai_command_requires_daemon_startup("continue"));
     }
 }
 

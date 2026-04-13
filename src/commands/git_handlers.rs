@@ -146,11 +146,20 @@ pub fn handle_git(args: &[String]) {
             exit_with_status(exit_status);
         }
 
-        // Initialize the daemon telemetry handle so we can send wrapper state
+        let daemon_init_result = crate::daemon::telemetry_handle::init_daemon_telemetry_handle();
         if let crate::daemon::telemetry_handle::DaemonTelemetryInitResult::Failed(e) =
-            crate::daemon::telemetry_handle::init_daemon_telemetry_handle()
+            &daemon_init_result
         {
             debug_log(&format!("wrapper: daemon telemetry init failed: {}", e));
+        }
+
+        if should_fallback_to_sync_hooks_in_async_mode(
+            &daemon_init_result,
+            parsed.command.as_deref(),
+        ) {
+            debug_log("wrapper: daemon unavailable, falling back to synchronous hook path");
+            let exit_status = run_git_with_optional_hooks(args);
+            exit_with_status(exit_status);
         }
 
         let repository = find_repository(&parsed.global_args).ok();
@@ -185,6 +194,24 @@ pub fn handle_git(args: &[String]) {
         exit_with_status(exit_status);
     }
 
+    let exit_status = run_git_with_optional_hooks(args);
+    exit_with_status(exit_status);
+}
+
+fn should_fallback_to_sync_hooks_in_async_mode(
+    daemon_init_result: &crate::daemon::telemetry_handle::DaemonTelemetryInitResult,
+    command: Option<&str>,
+) -> bool {
+    matches!(
+        daemon_init_result,
+        crate::daemon::telemetry_handle::DaemonTelemetryInitResult::Failed(_)
+    ) && command.is_some_and(|command| {
+        !crate::git::command_classification::is_definitely_read_only_command(command)
+            && !matches!(command, "clone" | "init")
+    })
+}
+
+fn run_git_with_optional_hooks(args: &[String]) -> std::process::ExitStatus {
     let mut parsed_args = parse_git_cli_args(args);
 
     let mut repository_option = find_repository(&parsed_args.global_args).ok();
@@ -214,7 +241,7 @@ pub fn handle_git(args: &[String]) {
     }
 
     // run with hooks
-    let exit_status = if !parsed_args.is_help && has_repo && !skip_hooks {
+    if !parsed_args.is_help && has_repo && !skip_hooks {
         let mut command_hooks_context = CommandHooksContext {
             pre_commit_hook_result: None,
             rebase_original_head: None,
@@ -276,8 +303,7 @@ pub fn handle_git(args: &[String]) {
             child_hooks_path_override.as_deref(),
             None,
         )
-    };
-    exit_with_status(exit_status);
+    }
 }
 
 /// Handle alias invocations
@@ -330,6 +356,36 @@ fn resolve_alias_impl(
         expanded_args.extend(current.command_args.iter().cloned());
 
         current = parse_git_cli_args(&expanded_args);
+    }
+}
+
+#[cfg(test)]
+mod async_fallback_tests {
+    use super::should_fallback_to_sync_hooks_in_async_mode;
+    use crate::daemon::telemetry_handle::DaemonTelemetryInitResult;
+
+    #[test]
+    fn async_mode_falls_back_for_mutating_commands_when_daemon_init_fails() {
+        assert!(should_fallback_to_sync_hooks_in_async_mode(
+            &DaemonTelemetryInitResult::Failed("locked".to_string()),
+            Some("commit"),
+        ));
+    }
+
+    #[test]
+    fn async_mode_does_not_fallback_for_read_only_commands() {
+        assert!(!should_fallback_to_sync_hooks_in_async_mode(
+            &DaemonTelemetryInitResult::Failed("locked".to_string()),
+            Some("status"),
+        ));
+    }
+
+    #[test]
+    fn async_mode_does_not_fallback_when_daemon_is_available() {
+        assert!(!should_fallback_to_sync_hooks_in_async_mode(
+            &DaemonTelemetryInitResult::Connected,
+            Some("commit"),
+        ));
     }
 }
 
@@ -762,6 +818,9 @@ fn send_wrapper_pre_state_to_daemon(
     worktree: Option<&std::path::Path>,
     pre_state: &Option<crate::git::repo_state::HeadState>,
 ) {
+    if !crate::daemon::telemetry_handle::daemon_telemetry_available() {
+        return;
+    }
     let Some(wt) = worktree else { return };
     let Some(pre) = pre_state.clone() else { return };
     let wt_str = wt.to_string_lossy().to_string();
@@ -782,6 +841,9 @@ fn send_wrapper_post_state_to_daemon(
     worktree: Option<&std::path::Path>,
     post_state: &Option<crate::git::repo_state::HeadState>,
 ) {
+    if !crate::daemon::telemetry_handle::daemon_telemetry_available() {
+        return;
+    }
     let Some(wt) = worktree else { return };
     let Some(post) = post_state.clone() else {
         return;
