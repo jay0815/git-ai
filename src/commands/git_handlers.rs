@@ -24,7 +24,6 @@ use std::collections::HashSet;
 use crate::observability::wrapper_performance_targets::log_performance_target_if_violated;
 #[cfg(windows)]
 use crate::utils::CREATE_NO_WINDOW;
-use crate::utils::debug_log;
 #[cfg(windows)]
 use crate::utils::is_interactive_terminal;
 #[cfg(unix)]
@@ -115,14 +114,23 @@ pub fn handle_git(args: &[String]) {
     if config::Config::get().feature_flags().async_mode {
         let parsed = parse_git_cli_args(args);
 
-        // Read-only commands don't need wrapper state (the daemon fast-paths
+        // Read-only invocations don't need wrapper state (the daemon fast-paths
         // their trace events and never processes them through the normalizer).
         // Skip the invocation_id so we can also suppress trace2 for them,
         // avoiding unnecessary daemon work and wrapper_states memory leaks.
-        let is_read_only = parsed
-            .command
-            .as_deref()
-            .is_some_and(crate::git::command_classification::is_definitely_read_only_command);
+        //
+        // Use is_definitely_read_only_invocation (not is_definitely_read_only_command)
+        // so that subcommand-gated read-only calls like `git stash list` and
+        // `git worktree list` are also suppressed — these account for thousands
+        // of Zed IDE invocations per session.
+        let is_read_only = {
+            let subcommand = parsed.command_args.first().map(String::as_str);
+            parsed.command.as_deref().is_some_and(|cmd| {
+                crate::git::command_classification::is_definitely_read_only_invocation(
+                    cmd, subcommand,
+                )
+            })
+        };
 
         if is_read_only {
             let exit_status = proxy_to_git(args, false, None, None);
@@ -150,7 +158,7 @@ pub fn handle_git(args: &[String]) {
         if let crate::daemon::telemetry_handle::DaemonTelemetryInitResult::Failed(e) =
             &daemon_init_result
         {
-            debug_log(&format!("wrapper: daemon telemetry init failed: {}", e));
+            tracing::debug!("wrapper: daemon telemetry init failed: {}", e);
         }
 
         if should_fallback_to_sync_hooks_in_async_mode(
@@ -223,7 +231,7 @@ fn run_git_with_optional_hooks(args: &[String]) -> std::process::ExitStatus {
     let skip_hooks = !config.is_allowed_repository(&repository_option);
 
     if skip_hooks {
-        debug_log(
+        tracing::debug!(
             "Skipping git-ai hooks because repository is excluded or not in allow_repositories list",
         );
     }
@@ -535,7 +543,7 @@ fn run_pre_command_hooks(
             "args": parsed_args.to_invocation_vec(),
         });
 
-        debug_log(&error_message);
+        tracing::debug!("{}", error_message);
         observability::log_error(&HookPanicError(error_message.clone()), Some(context));
     }
 }
@@ -640,7 +648,7 @@ fn run_post_command_hooks(
             "args": parsed_args.to_invocation_vec(),
         });
 
-        debug_log(&error_message);
+        tracing::debug!("{}", error_message);
         observability::log_error(&HookPanicError(error_message.clone()), Some(context));
     }
 }
@@ -829,10 +837,11 @@ fn send_wrapper_pre_state_to_daemon(
         &wt_str,
         head_state_to_repo_context(pre),
     ) {
-        debug_log(&format!(
+        tracing::debug!(
             "wrapper: failed to send pre-state for {}: {}",
-            invocation_id, e
-        ));
+            invocation_id,
+            e
+        );
     }
 }
 
@@ -854,10 +863,11 @@ fn send_wrapper_post_state_to_daemon(
         &wt_str,
         head_state_to_repo_context(post),
     ) {
-        debug_log(&format!(
+        tracing::debug!(
             "wrapper: failed to send post-state for {}: {}",
-            invocation_id, e
-        ));
+            invocation_id,
+            e
+        );
     }
 }
 
@@ -867,17 +877,21 @@ fn proxy_to_git(
     child_hooks_path_override: Option<&str>,
     wrapper_invocation_id: Option<&str>,
 ) -> std::process::ExitStatus {
-    // Suppress trace2 for read-only commands to avoid hitting the daemon with
-    // events that can never produce meaningful state changes. In async mode,
-    // read-only commands are handled before this point (no invocation_id set),
-    // so wrapper_invocation_id is only Some for mutating commands that need
-    // trace2 events for the daemon to match wrapper state entries.
+    // Suppress trace2 for read-only invocations to avoid hitting the daemon
+    // with events that can never produce meaningful state changes.  In async
+    // mode, read-only invocations are handled before this point (no
+    // invocation_id set), so wrapper_invocation_id is only Some for mutating
+    // commands that need trace2 events for the daemon to match wrapper state.
+    //
+    // Use is_definitely_read_only_invocation so that subcommand-gated
+    // read-only calls like `git stash list` and `git worktree list` are also
+    // suppressed (matches the updated wrapper check in handle_git above).
     let suppress_trace2 = wrapper_invocation_id.is_none() && {
         let parsed = parse_git_cli_args(args);
-        parsed
-            .command
-            .as_deref()
-            .is_some_and(crate::git::command_classification::is_definitely_read_only_command)
+        let subcommand = parsed.command_args.first().map(String::as_str);
+        parsed.command.as_deref().is_some_and(|cmd| {
+            crate::git::command_classification::is_definitely_read_only_invocation(cmd, subcommand)
+        })
     };
 
     // Use spawn for interactive commands

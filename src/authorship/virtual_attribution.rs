@@ -1454,6 +1454,60 @@ impl VirtualAttributions {
                 }
             }
 
+            // Fill gaps in committed hunks caused by imara_diff Equal matching.
+            //
+            // When AI rewrites a region, imara_diff can match byte-for-byte
+            // identical lines (e.g. empty lines between code blocks) as "Equal",
+            // preserving the old human attribution. Those lines get stripped from
+            // the checkpoint's line_attributions and never make it here. This
+            // leaves gaps in committed_hunks that show as [no-data] in `git ai diff`.
+            //
+            // Fix: for each gap line in a committed hunk, check the nearest
+            // attributed line before and after it. If both neighbors have the
+            // same AI author (not human/h_), fill the gap with that author.
+            if let Some(hunks) = file_committed_hunks {
+                // Build a sorted map of committed line → author_id for neighbor lookups
+                let mut line_to_author: Vec<(u32, &str)> = Vec::new();
+                for (author_id, lines) in &committed_lines_map {
+                    for &line in lines {
+                        line_to_author.push((line, author_id.as_str()));
+                    }
+                }
+                line_to_author.sort_by_key(|(line, _)| *line);
+
+                let mut gap_fills: Vec<(String, u32)> = Vec::new();
+
+                for hunk in hunks {
+                    for line in hunk.expand() {
+                        // Skip lines that already have attribution
+                        if line_to_author
+                            .binary_search_by_key(&line, |(l, _)| *l)
+                            .is_ok()
+                        {
+                            continue;
+                        }
+
+                        // Find nearest attributed neighbor before this line
+                        let prev = line_to_author.iter().rev().find(|(l, _)| *l < line);
+
+                        // Find nearest attributed neighbor after this line
+                        let next = line_to_author.iter().find(|(l, _)| *l > line);
+
+                        // Fill only if both neighbors exist and are the same AI author
+                        if let (Some((_, prev_author)), Some((_, next_author))) = (prev, next)
+                            && prev_author == next_author
+                            && !prev_author.starts_with("h_")
+                        {
+                            gap_fills.push((prev_author.to_string(), line));
+                        }
+                    }
+                }
+
+                for (author_id, line) in gap_fills {
+                    committed_lines_map.entry(author_id).or_default().push(line);
+                }
+            }
+
             // Add committed attributions to authorship log
             if !committed_lines_map.is_empty() {
                 // Create attestation entries from committed lines
@@ -1670,6 +1724,44 @@ impl VirtualAttributions {
                             .or_default()
                             .push(line_num);
                     }
+                }
+            }
+
+            // Fill attribution gaps for lines in committed hunks that weren't
+            // directly attributed (e.g. empty lines between AI-authored blocks).
+            // Only fill if both nearest neighbors share the same AI author.
+            {
+                let mut line_to_author: Vec<(u32, &str)> = Vec::new();
+                for (author_id, lines) in &committed_lines_map {
+                    for &line in lines {
+                        line_to_author.push((line, author_id.as_str()));
+                    }
+                }
+                line_to_author.sort_by_key(|(line, _)| *line);
+
+                let mut gap_fills: Vec<(String, u32)> = Vec::new();
+
+                for hunk in file_committed_hunks {
+                    for line in hunk.expand() {
+                        if line_to_author
+                            .binary_search_by_key(&line, |(l, _)| *l)
+                            .is_ok()
+                        {
+                            continue;
+                        }
+                        let prev = line_to_author.iter().rev().find(|(l, _)| *l < line);
+                        let next = line_to_author.iter().find(|(l, _)| *l > line);
+                        if let (Some((_, prev_author)), Some((_, next_author))) = (prev, next)
+                            && prev_author == next_author
+                            && !prev_author.starts_with("h_")
+                        {
+                            gap_fills.push((prev_author.to_string(), line));
+                        }
+                    }
+                }
+
+                for (author_id, line) in gap_fills {
+                    committed_lines_map.entry(author_id).or_default().push(line);
                 }
             }
 
@@ -2107,18 +2199,13 @@ pub fn restore_stashed_va(
     new_head: &str,
     stashed_va: VirtualAttributions,
 ) {
-    use crate::utils::debug_log;
-
-    debug_log(&format!(
-        "Restoring stashed VA: {} -> {}",
-        old_head, new_head
-    ));
+    tracing::debug!("Restoring stashed VA: {} -> {}", old_head, new_head);
 
     // Get the files that were in the stashed VA
     let stashed_files: Vec<String> = stashed_va.files();
 
     if stashed_files.is_empty() {
-        debug_log("Stashed VA has no files, nothing to restore");
+        tracing::debug!("Stashed VA has no files, nothing to restore");
         return;
     }
 
@@ -2135,10 +2222,10 @@ pub fn restore_stashed_va(
                 // file may contain conflict markers. We keep "ours" (stashed VA) lines
                 // so the attribution merge operates on clean content.
                 let clean_content = if content_has_conflict_markers(&content) {
-                    debug_log(&format!(
+                    tracing::debug!(
                         "Conflict markers detected in {}, stripping for VA merge",
                         file_path
-                    ));
+                    );
                     strip_conflict_markers_keep_ours(&content)
                 } else {
                     content
@@ -2149,7 +2236,7 @@ pub fn restore_stashed_va(
     }
 
     if working_files.is_empty() {
-        debug_log("No working files to restore attributions for");
+        tracing::debug!("No working files to restore attributions for");
         return;
     }
 
@@ -2161,7 +2248,7 @@ pub fn restore_stashed_va(
     ) {
         Ok(va) => va,
         Err(e) => {
-            debug_log(&format!("Failed to build new VA: {}, using empty", e));
+            tracing::debug!("Failed to build new VA: {}, using empty", e);
             VirtualAttributions::new(
                 repository.clone(),
                 new_head.to_string(),
@@ -2176,7 +2263,7 @@ pub fn restore_stashed_va(
     let merged_va = match merge_attributions_favoring_first(stashed_va, new_va, working_files) {
         Ok(va) => va,
         Err(e) => {
-            debug_log(&format!("Failed to merge VirtualAttributions: {}", e));
+            tracing::debug!("Failed to merge VirtualAttributions: {}", e);
             return;
         }
     };
@@ -2201,10 +2288,7 @@ pub fn restore_stashed_va(
         let working_log = match repository.storage.working_log_for_base_commit(new_head) {
             Ok(wl) => wl,
             Err(e) => {
-                debug_log(&format!(
-                    "Failed to get working log for {}: {}",
-                    new_head, e
-                ));
+                tracing::debug!("Failed to get working log for {}: {}", new_head, e);
                 return;
             }
         };
@@ -2218,14 +2302,14 @@ pub fn restore_stashed_va(
             initial_attributions.humans,
             initial_file_contents,
         ) {
-            debug_log(&format!("Failed to write INITIAL attributions: {}", e));
+            tracing::debug!("Failed to write INITIAL attributions: {}", e);
             return;
         }
 
-        debug_log(&format!(
-            "✓ Restored AI attributions to INITIAL for new HEAD {}",
+        tracing::debug!(
+            "Restored AI attributions to INITIAL for new HEAD {}",
             &new_head[..8.min(new_head.len())]
-        ));
+        );
     }
 }
 
